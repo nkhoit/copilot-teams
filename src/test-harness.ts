@@ -1,5 +1,6 @@
 import { CopilotClient, approveAll } from "@github/copilot-sdk";
-import { TeamState, createTeamTools } from "./team-tools.js";
+import { TeamState } from "./team-state.js";
+import { createTeamTools } from "./team-tools.js";
 
 /**
  * Milestone 1: Two agents can talk to each other.
@@ -40,7 +41,7 @@ async function main() {
   console.log("🚀 Starting Copilot Teams — Milestone 1");
   console.log("   Testing: Can two agents talk to each other?\n");
 
-  // Shared team state (in-memory for M1)
+  // Shared team state
   const teamState = new TeamState();
 
   // Start the SDK client
@@ -58,7 +59,7 @@ async function main() {
     systemMessage: { mode: "append", content: AGENT_A_PROMPT },
     onPermissionRequest: approveAll,
   });
-  teamState.registerAgent("alice", "security researcher", alice);
+  teamState.registerAgent("alice", "security researcher", "claude-sonnet-4", alice);
   console.log("✅ alice ready");
 
   // Create Bob's session
@@ -70,11 +71,11 @@ async function main() {
     systemMessage: { mode: "append", content: AGENT_B_PROMPT },
     onPermissionRequest: approveAll,
   });
-  teamState.registerAgent("bob", "backend engineer", bob);
+  teamState.registerAgent("bob", "backend engineer", "claude-sonnet-4", bob);
   console.log("✅ bob ready\n");
 
   // Wire up streaming so we can see what agents are thinking
-  for (const [id, session] of teamState.sessions) {
+  for (const [id, session] of teamState.getAllSessions()) {
     session.on("assistant.message", (event) => {
       console.log(`\n🤖 [${id} thinks]: ${event.data.content}`);
     });
@@ -114,20 +115,22 @@ async function main() {
   console.log("\n" + "═".repeat(60));
   console.log("📊 Message Log:");
   console.log("═".repeat(60));
-  for (const msg of teamState.messages) {
+  const messages = teamState.getChannelMessages("#general", 100);
+  for (const msg of messages) {
     if (msg.channel) {
-      console.log(`  [${msg.channel}] ${msg.from}: ${msg.content}`);
+      console.log(`  [${msg.channel}] ${msg.from_agent}: ${msg.content}`);
     } else {
-      console.log(`  [DM] ${msg.from} → ${msg.to}: ${msg.content}`);
+      console.log(`  [DM] ${msg.from_agent} → ${msg.to_agent}: ${msg.content}`);
     }
   }
-  console.log(`\nTotal messages exchanged: ${teamState.messages.length}`);
+  console.log(`\nTotal messages: ${messages.length}`);
 
   // Cleanup
   console.log("\n🧹 Cleaning up...");
   await alice.disconnect();
   await bob.disconnect();
   await client.stop();
+  teamState.close();
   console.log("✅ Done!");
 }
 
