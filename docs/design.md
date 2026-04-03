@@ -1,44 +1,51 @@
 # Copilot Teams — Design Document
 
+> **Last updated**: 2026-04-03 (v2 — daemon architecture, autonomous teams)
+
 ## Vision
 
-Copilot Teams is an **agent teams** platform for GitHub Copilot. It lets multiple AI agents collaborate on software engineering tasks — communicating, decomposing work into tasks, and dynamically growing/shrinking the team. Think of it as Claude Code's [agent teams](https://code.claude.com/docs/en/agent-teams) but built on top of the GitHub Copilot SDK.
+Copilot Teams is an **autonomous project teams** platform for GitHub Copilot. You spin up a team, give it a mission, and walk away. The team self-organizes — the lead decomposes work, spawns workers, delegates tasks, and drives toward completion. You check in when you want, course-correct if needed, and shut it down when it's served its purpose.
 
-The user talks to their team like a tech lead talks to engineers: give high-level direction, the lead decomposes it, workers execute, and results flow back.
+Think of it as building a small startup to do a thing. The team persists as long as its purpose exists.
+
+The primary consumer is **another agent** (not a human GUI), though human check-ins via CLI/TUI/web are supported.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    Clients                          │
-│  (CLI, TUI, Web UI, IRC bridge — anything)          │
-└──────────────┬──────────────────┬───────────────────┘
-               │ REST             │ WebSocket
-┌──────────────▼──────────────────▼───────────────────┐
-│                  Gateway (Express)                   │
-│  REST: agents, channels, messages, tasks, teams      │
-│  WS: real-time event stream (agent.thinking,         │
-│      message.channel, task.completed, etc.)          │
-└──────────────┬──────────────────────────────────────┘
-               │
-┌──────────────▼──────────────────────────────────────┐
-│               Orchestrator                           │
-│  Wraps CopilotClient + TeamState + session lifecycle │
-│  Emits ServerEvents on every state change            │
-│  Manages agent spawn/despawn                         │
-└───────┬───────────────┬─────────────────────────────┘
-        │               │
-┌───────▼──────┐ ┌──────▼─────────────────────────────┐
-│  TeamState   │ │       Copilot SDK Sessions           │
-│  (SQLite)    │ │  One CopilotClient, N sessions       │
-│              │ │  Each session has team tools injected │
-│  - agents    │ │  via defineTool()                     │
-│  - messages  │ │                                       │
-│  - tasks     │ │  Tools have direct references to      │
-│  - volleys   │ │  TeamState + all other sessions       │
-└──────────────┘ └─────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                     DAEMON PROCESS                       │
+│                                                          │
+│  ┌──────────────┐  ┌──────────────────────────────────┐ │
+│  │ Team Registry │  │         Gateway API               │ │
+│  │               │  │  REST: /api/teams/:id/...         │ │
+│  │ create/list/  │  │  WS: event stream per team        │ │
+│  │ delete teams  │  │                                   │ │
+│  └──────┬───────┘  └──────────────┬────────────────────┘ │
+│         │                         │                      │
+│  ┌──────▼─────────────────────────▼────────────────────┐ │
+│  │              Orchestrator (per team)                  │ │
+│  │                                                      │ │
+│  │  ┌─────────────┐  ┌──────────────┐  ┌────────────┐ │ │
+│  │  │   Mission    │  │  Autonomy    │  │  Copilot   │ │ │
+│  │  │   System     │  │  Engine      │  │  Sessions  │ │ │
+│  │  │             │  │              │  │            │ │ │
+│  │  │ current obj │  │ event→nudge  │  │ lead       │ │ │
+│  │  │ history     │  │ heartbeat    │  │ worker 1   │ │ │
+│  │  │ completion  │  │ escalation   │  │ worker 2   │ │ │
+│  │  └─────────────┘  └──────────────┘  └────────────┘ │ │
+│  │                                                      │ │
+│  │  ┌──────────────────────────────────────────────────┐│ │
+│  │  │  TeamState (SQLite per team)                     ││ │
+│  │  │  agents | messages | tasks | mission_log         ││ │
+│  │  └──────────────────────────────────────────────────┘│ │
+│  └──────────────────────────────────────────────────────┘ │
+│                                                          │
+│  ~/.copilot-teams/teams/<name>/state.db                  │
+│  ~/.copilot-teams/daemon.json (PID, port)                │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ### Key Insight: `defineTool()` is the backbone
@@ -49,7 +56,7 @@ The Copilot SDK's `defineTool()` lets us inject TypeScript functions as tools in
 
 | Component | Technology | Why |
 |-----------|-----------|-----|
-| AI Backend | `@github/copilot-sdk` | Session lifecycle, model access, tool execution, streaming |
+| AI Backend | `@github/copilot-sdk` | Session lifecycle, model access, tool execution, streaming, session persistence/resume |
 | State | `better-sqlite3` (WAL mode) | Persistent, fast, zero-config, atomic operations |
 | Schema validation | `zod` | Tool parameter validation (required by `defineTool`) |
 | API Server | `express` + `ws` | REST endpoints + WebSocket event bus |
@@ -59,6 +66,19 @@ The Copilot SDK's `defineTool()` lets us inject TypeScript functions as tools in
 
 ## Core Concepts
 
+### Teams
+
+A team is a **persistent organizational unit** — not a one-shot job runner. It has:
+- **name**: unique identifier (e.g., `"api-rewrite"`, `"mobile-app"`)
+- **mission**: mutable directive describing the team's current objective
+- **workingDirectory**: root directory the lead can access (workers get scoped subdirectories)
+- **state**: `active` | `completed` | `paused` | `shutdown`
+- **agents**: the workforce (lead + workers)
+
+Teams persist across daemon restarts. Their SQLite DB and Copilot SDK session state survive on disk.
+
+The mission is not static — it can evolve. If the team finishes its original objective, you can update the mission and the lead will re-plan. Create a new team only for a completely new charter.
+
 ### Agents
 
 An agent is a Copilot SDK session with team tools injected. Each agent has:
@@ -67,15 +87,39 @@ An agent is a Copilot SDK session with team tools injected. Each agent has:
 - **model**: which model to use (default: `claude-sonnet-4`)
 - **status**: `idle` | `working`
 - **currentTask**: the task ID they're working on (if any)
+- **workingDirectory**: the directory this agent's file operations are scoped to
+- **sessionId**: the Copilot SDK session ID (for persistence/resume)
 
-The first agent spawned is automatically designated the **team lead** (gets a lead-specific system prompt).
+#### The Lead
 
-### Channels & Messages
+The first agent spawned is the **team lead**. The lead:
+- Receives the mission and decomposes it into tasks
+- Spawns workers with appropriate roles and working directories
+- Delegates tasks and monitors progress
+- Declares mission completion when done
+- Has the broadest working directory scope (the team's root)
 
-- `#general` is the main channel. All agents see messages posted here.
-- **DMs** are private between two agents (or user → agent).
-- Messages are persisted in SQLite with timestamps.
-- When a user sends to `#general`, all agents receive the message via `session.send()`.
+Workers get scoped working directories assigned by the lead.
+
+### Communication: DMs Only
+
+There are **no channels**. All inter-agent communication is via direct messages. Rationale:
+
+- The lead already has full visibility via `team_get_tasks` and `team_get_roster`
+- Tasks and their results ARE the broadcast mechanism
+- Channels cause cascading responses (everyone replies to everything)
+- DMs are targeted — the volley counter handles any remaining ping-pong
+
+Communication patterns:
+1. **User → Lead**: Mission updates, course corrections (via `/api/teams/:id/messages`)
+2. **User → Agent**: Tactical override DM (via `/api/teams/:id/dm/:agentId`)
+3. **Lead → Worker**: Task assignment + context (via `team_create_task` + `team_dm`)
+4. **Worker → Lead**: "I'm done / I'm stuck" (via `team_complete_task` + `team_dm`)
+5. **Worker → Worker**: Ad-hoc coordination (via `team_dm`)
+
+### Activity Feed
+
+For observability, there is a **read-only activity feed** — a projection of everything that happened (tasks created, claimed, completed, DMs sent, mission changes). This replaces the old `#general` channel concept.
 
 ### Tasks
 
@@ -89,27 +133,116 @@ Tasks are the unit of work. They have:
 
 Tasks support dependency chains — a task with `dependsOn: ["audit"]` stays `blocked` until the `audit` task is completed, at which point it auto-transitions to `pending` and the assignee is notified.
 
-### Team Tools (7 tools injected into every agent)
+### Mission
 
-| Tool | Purpose |
-|------|---------|
-| `team_send` | Post to #general (broadcasts to all agents) |
-| `team_dm` | Direct message to a specific agent |
-| `team_get_roster` | List all team members and their status |
-| `team_create_task` | Create a task (with optional dependencies) |
-| `team_get_tasks` | Query tasks (optionally filtered by status) |
-| `team_claim_task` | Claim a pending task to work on |
-| `team_complete_task` | Mark a task as done with a result summary |
+Each team has a **current mission** (mutable text) plus a **mission log** tracking changes over time. The mission is the team's north star — the lead plans tasks to fulfill it.
+
+Mission lifecycle:
+1. Team created with initial mission → lead decomposes into tasks
+2. User updates mission → lead re-evaluates and re-plans
+3. Lead declares mission complete → team transitions to `completed`
+4. User can update mission again → team goes back to `active`
+
+**Who declares completion?** The lead. It calls `team_complete_mission` when it believes the objective is fulfilled. The calling agent/user reviews the completion summary and either accepts or pushes back with a mission update.
+
+There is no automated verification — the trust boundary is between the user and the lead.
 
 ---
 
-## Interaction Model (Model C — Hybrid)
+## Team Tools
 
-The user primarily talks to the team through `#general`, where the **lead** picks up messages and coordinates. But the user can also **DM any agent directly** for tactical overrides.
+Tools injected into every agent session via `defineTool()`:
+
+| Tool | Purpose | Who uses it |
+|------|---------|-------------|
+| `team_dm` | Direct message to a specific agent (with `expectsReply` flag) | Everyone |
+| `team_get_roster` | List all team members and their status | Everyone |
+| `team_create_task` | Create a task (with optional dependencies and assignee) | Lead |
+| `team_get_tasks` | Query tasks (optionally filtered by status) | Everyone |
+| `team_claim_task` | Claim a pending task to start working on it | Workers |
+| `team_complete_task` | Mark a task as done with a result summary | Workers |
+| `team_spawn_agent` | Spawn a new worker with a role and working directory | Lead |
+| `team_complete_mission` | Declare the current mission fulfilled | Lead |
+
+Note: `team_send` (channel broadcast) has been removed. The lead spawning workers is a tool rather than a REST-only operation — this lets the lead self-organize.
+
+---
+
+## Autonomy Engine
+
+The autonomy engine makes teams self-driving. It is **event-driven with a heartbeat safety net** (Option C from design discussions).
+
+### Event-Driven Nudges
+
+The orchestrator watches for state changes and sends nudges to the lead:
+
+| Event | Nudge to Lead |
+|-------|---------------|
+| Team created with mission | "Here's your mission. Decompose and delegate." |
+| Task completed | "Task X done. Result: Y. What's next?" |
+| All tasks done | "All tasks complete. Is the mission fulfilled?" |
+| Agent idle > N minutes | "Agent Z has been idle. Anything for them?" |
+| All agents idle + tasks pending | "Deadlock: tasks pending but nobody's working." |
+| Mission updated | "Mission changed. Re-evaluate and re-plan." |
+| Team resumed after restart | "Team resumed. Review current state and take action." |
+
+### Heartbeat
+
+Periodic check-in to catch edge cases the event system misses:
+- **Aggressive** when work is active: every ~2 minutes
+- **Relaxed** when team is idle/waiting: every ~10 minutes
+- **Off** when mission is completed
+
+The heartbeat message includes task/agent status summary. If the lead replies `NOTHING_TO_DO`, the engine stays quiet until the next event or heartbeat.
+
+### Design Note
+
+The autonomy engine requires significant trial-and-error tuning. The nudge table and heartbeat intervals are starting points. Key unknowns:
+- What prompt makes the lead think vs. just acknowledge?
+- What heartbeat interval prevents stalls without burning tokens?
+- What happens when the lead makes a bad plan?
+
+Build the skeleton, ship with conservative defaults, iterate based on real runs.
+
+---
+
+## Working Directory Model
+
+Each team has a root `workingDirectory`. The lead gets this broad scope. Workers get scoped to specific subdirectories by the lead.
 
 ```
-User writes to #general → Lead decomposes into tasks → Workers execute
-User DMs engineer directly → Engineer acts on it, Lead gets notified
+Team workingDirectory: /projects/
+├── api/          ← backend worker scoped here
+├── web/          ← frontend worker scoped here
+└── shared/       ← lead has access to everything
+```
+
+**How it works:**
+- The Copilot SDK supports `workingDirectory` per session (`createSession({ workingDirectory })`)
+- A single `CopilotClient` can manage sessions with different working directories
+- The lead calls `team_spawn_agent({ id, role, workingDirectory })` to create workers scoped to specific directories
+- No multi-directory support per session — one directory per agent
+
+**Team creation flow:**
+1. User creates team with `workingDirectory: "/projects/"` and a mission
+2. Lead spawns in `/projects/`, explores the structure
+3. Lead decides "I need a backend engineer in `/projects/api/` and a tester in `/projects/api/`"
+4. Lead calls `team_spawn_agent` with the appropriate `workingDirectory` for each worker
+5. Workers can only see files in their scoped directory
+
+This is **sandboxing-by-delegation** — the lead decides who can access what.
+
+---
+
+## Interaction Model
+
+The user (or calling agent) primarily talks to the **lead** via the messages endpoint. The lead coordinates everything internally. The user can also DM any agent directly for tactical overrides.
+
+```
+User creates team with mission → Lead decomposes → Workers execute
+User checks in → reads activity feed, task status
+User course-corrects → updates mission or DMs an agent
+User satisfied → team sits idle or gets shut down
 ```
 
 Hierarchy (enforced via system prompts, not infrastructure):
@@ -125,7 +258,7 @@ Without guardrails, agents will chat endlessly ("Got it!" "Thanks!" "No problem!
 
 1. **System prompt rules**: Agents are instructed not to acknowledge messages, not to reply to FYI messages, and to only respond with substantive content.
 2. **`expectsReply` flag**: The `team_dm` tool has a boolean parameter. When `false`, the message is tagged `[NO REPLY NEEDED]` and agents know not to respond.
-3. **Volley counter**: Tracks consecutive DMs between any pair of agents. After `MAX_VOLLEY` (default: 3) consecutive exchanges, further DMs are blocked until the agent does "real work" (completes a task, posts to #general, etc.).
+3. **Volley counter**: Tracks consecutive DMs between any pair of agents. After `MAX_VOLLEY` (default: 3) consecutive exchanges, further DMs are blocked until the agent does "real work" (completes a task, etc.).
 
 In practice, the prompt rules alone work well — the volley counter is a safety net.
 
@@ -137,34 +270,49 @@ In practice, the prompt rules alone work well — the volley counter is a safety
 
 | Method | Path | Description |
 |--------|------|-------------|
+| **Daemon** | | |
 | GET | `/api/health` | Health check |
-| GET | `/api/status` | Full team snapshot (agents, tasks, channels) |
-| GET | `/api/agents` | List all agents |
-| GET | `/api/agents/:id` | Get a specific agent |
-| POST | `/api/agents` | Spawn a new agent `{ id, role, model? }` |
-| DELETE | `/api/agents/:id` | Despawn an agent |
-| GET | `/api/channels/:ch/messages` | Get channel messages |
-| POST | `/api/channels/:ch/messages` | Send message to channel `{ content }` |
-| POST | `/api/dm/:agentId` | DM an agent `{ content }` |
-| GET | `/api/tasks` | List tasks (optional `?status=` filter) |
-| POST | `/api/tasks` | Create a task `{ id, title, description?, dependsOn?, assignee? }` |
+| **Teams** | | |
+| POST | `/api/teams` | Create a team `{ name, mission, workingDirectory, agents? }` |
+| GET | `/api/teams` | List all teams |
+| GET | `/api/teams/:id` | Team status (agents, tasks, mission, state) |
+| DELETE | `/api/teams/:id` | Shut down a team |
+| POST | `/api/teams/:id/pause` | Pause a team (keep state, stop autonomy) |
+| POST | `/api/teams/:id/resume` | Resume a paused team |
+| **Mission** | | |
+| GET | `/api/teams/:id/mission` | Current mission + history |
+| PUT | `/api/teams/:id/mission` | Update mission `{ text }` |
+| **Agents** | | |
+| GET | `/api/teams/:id/agents` | List agents |
+| POST | `/api/teams/:id/agents` | Add agent `{ id, role, model?, workingDirectory? }` |
+| DELETE | `/api/teams/:id/agents/:agentId` | Remove agent |
+| **Communication** | | |
+| POST | `/api/teams/:id/messages` | Send message to the lead `{ content }` |
+| POST | `/api/teams/:id/dm/:agentId` | DM a specific agent `{ content }` |
+| **Observability** | | |
+| GET | `/api/teams/:id/activity` | Activity feed (read-only log of everything) |
+| GET | `/api/teams/:id/tasks` | List tasks `(?status=)` |
 
-### WebSocket Events (`ws://host:port/ws`)
+### WebSocket Events
+
+Connect to `ws://host:port/ws?team=<teamId>` for a specific team, or `ws://host:port/ws` for all teams.
 
 **Server → Client events:**
 
 ```typescript
 type ServerEvent =
-  | { type: "agent.joined"; agent: Agent }
-  | { type: "agent.left"; agentId: string }
-  | { type: "agent.status"; agentId: string; status: string; currentTask: string | null }
-  | { type: "message.channel"; message: Message }
-  | { type: "message.dm"; message: Message }
-  | { type: "task.created"; task: Task }
-  | { type: "task.claimed"; taskId: string; agentId: string }
-  | { type: "task.completed"; taskId: string; agentId: string; result: string }
-  | { type: "task.unblocked"; task: Task }
-  | { type: "agent.thinking"; agentId: string; content: string }
+  | { type: "agent.joined"; teamId: string; agent: Agent }
+  | { type: "agent.left"; teamId: string; agentId: string }
+  | { type: "agent.status"; teamId: string; agentId: string; status: string; currentTask: string | null }
+  | { type: "message.dm"; teamId: string; message: Message }
+  | { type: "task.created"; teamId: string; task: Task }
+  | { type: "task.claimed"; teamId: string; taskId: string; agentId: string }
+  | { type: "task.completed"; teamId: string; taskId: string; agentId: string; result: string }
+  | { type: "task.unblocked"; teamId: string; task: Task }
+  | { type: "mission.updated"; teamId: string; text: string }
+  | { type: "mission.completed"; teamId: string; summary: string }
+  | { type: "agent.thinking"; teamId: string; agentId: string; content: string }
+  | { type: "team.state"; teamId: string; state: TeamStateEnum }
   | { type: "error"; message: string }
 ```
 
@@ -172,9 +320,73 @@ type ServerEvent =
 
 ```typescript
 type ClientCommand =
-  | { type: "message"; channel: string; content: string }
-  | { type: "dm"; to: string; content: string }
-  | { type: "task.create"; id: string; title: string; description?: string; dependsOn?: string[]; assignee?: string }
+  | { type: "message"; teamId: string; content: string }
+  | { type: "dm"; teamId: string; to: string; content: string }
+  | { type: "mission.update"; teamId: string; text: string }
+```
+
+---
+
+## Daemon Lifecycle
+
+### Process Management
+
+The daemon is a single Node.js process managing all teams. State file at `~/.copilot-teams/daemon.json`:
+
+```json
+{ "pid": 12345, "port": 3742, "startedAt": "2026-04-03T..." }
+```
+
+**Start**: Lazy start on first API call, or explicit `copilot-teams daemon start`. Spawns a detached process, writes PID file, boots gateway.
+
+**Stop**: `copilot-teams daemon stop` or `DELETE /api/daemon`. Gracefully disconnects all sessions (state preserved on disk), saves team configs, exits.
+
+**Status**: `copilot-teams daemon status` — shows running teams, port, uptime.
+
+### Crash Recovery
+
+On restart after a crash:
+
+1. Read team configs from `~/.copilot-teams/teams/*/` (which teams exist, their agents, session IDs)
+2. Start a new `CopilotClient`
+3. Call `client.resumeSession(sessionId, config)` for each agent — the SDK restores full conversation history from disk
+4. Re-inject team tools into each session
+5. Nudge the lead: "Team resumed after restart. Review current state and take action."
+
+**What survives a crash:**
+- ✅ SQLite state (messages, tasks, mission) — on disk
+- ✅ Agent conversation history — persisted by Copilot CLI, restored via `resumeSession()`
+- ❌ In-flight tool executions — lost, but tasks stay `in_progress` and the lead can re-assign
+
+The key SDK capabilities that enable this:
+- `session.disconnect()` releases memory but **preserves state on disk**
+- `client.resumeSession(sessionId, config)` resumes with full history
+- `client.listSessions()` discovers existing sessions
+- `client.deleteSession(id)` permanently removes session data
+
+### Shared CopilotClient
+
+One `CopilotClient` serves all teams. `createSession()` is independent per session, and each session can have its own `workingDirectory`. No need for one CLI subprocess per team.
+
+---
+
+## Team States
+
+```
+active      → team is working (autonomy engine running, agents busy)
+completed   → lead declared mission done (team idle, sessions alive)
+paused      → user manually paused (sessions alive, autonomy engine stopped)
+shutdown    → team torn down (sessions disconnected, only DB remains on disk)
+```
+
+Transitions:
+```
+create          → active
+complete_mission → completed
+update_mission  → active (from completed or paused)
+pause           → paused
+resume          → active
+delete          → shutdown
 ```
 
 ---
@@ -188,85 +400,28 @@ type ClientCommand =
 | `src/team-state.ts` | SQLite-backed state (agents, messages, tasks, volley counter) |
 | `src/team-tools.ts` | 7 `defineTool()` tools injected into every agent session |
 | `src/orchestrator.ts` | Wraps CopilotClient + TeamState + session lifecycle + events |
-| `src/gateway.ts` | Express REST API + WebSocket event bus |
+| `src/gateway.ts` | Express REST API + WebSocket event bus (single-team) |
 | `src/types.ts` | Shared TypeScript interfaces for API shapes |
 | `src/index.ts` | Entry point — starts the gateway on port 3742 |
 | `src/test-harness.ts` | M1 test (two agents chatting) |
 
 ### What's Been Tested
 
-- **M1**: Two agents (Alice, Bob) exchange messages via #general and DMs ✅
+- **M1**: Two agents (Alice, Bob) exchange messages via DMs ✅
 - **M2**: Three agents (lead, researcher, engineer) coordinate a security review with task dependencies. Lead decomposes work, researcher completes audit, tasks auto-unblock, engineer claims and starts fixes ✅
-- **M3**: Gateway boots, agents spawn/despawn via REST, user messages flow through #general, agents respond, tasks CRUD works, DMs work, WebSocket events pipe to clients ✅
+- **M3**: Gateway boots, agents spawn/despawn via REST, user messages flow through, agents respond, tasks CRUD works, DMs work, WebSocket events pipe to clients ✅
 
-### What Agents Actually Do
+### What Needs to Change
 
-During M2 testing, agents:
-- Used `team_create_task` to decompose "security review" into 3 dependent tasks
-- Used `team_claim_task` and `team_complete_task` to manage their work
-- Used `team_dm` with `expectsReply: false` for FYI notifications
-- Actually ran security analysis tools (grep, view files) and created findings databases
-- Started editing source files to fix discovered issues (!)
-- Respected anti-ping-pong rules ("No response needed")
+The current codebase is single-team with channels. To implement this design:
 
----
-
-## Remaining Milestones
-
-### M4: Dynamic Spawn/Despawn
-
-Agents can propose adding or removing team members through a quorum vote:
-
-- `team_propose` tool: "I need a database expert for this migration"
-- `team_vote` tool: other agents vote yes/no
-- Majority vote → Orchestrator spawns/despawns the agent
-- System prompt describes available roles/specializations
-
-This is what makes the team truly dynamic — it grows and shrinks based on the task.
-
-### M5: First Client
-
-Build a real frontend that connects to the gateway. Options:
-
-1. **CLI client** — `copilot-teams chat` opens a terminal chat interface
-2. **TUI** (Ink/React) — richer terminal UI with panels for agents, tasks, chat
-3. **Web UI** — React + assistant-ui library for streaming/markdown/typing indicators
-4. **IRC bridge** — map agents to IRC nicks, channels to IRC channels
-
-The gateway is client-agnostic — any of these can be built independently.
-
----
-
-## Open Design Questions
-
-### Multi-Team / Daemon Model
-
-The current gateway runs one team. The north-star architecture is:
-
-- **Single daemon** running in the background (`copilot-teams daemon start`)
-- **Multiple named workspaces** (teams) managed via the API
-- Each team has its own Orchestrator, agents, and SQLite DB
-- Teams can scope to one or more directories
-- State persists to `~/.copilot-teams/teams/<name>/state.db`
-- API prefix: `/api/teams/:teamId/...`
-
-This hasn't been built yet — the current implementation is single-team.
-
-### Working Directory Isolation
-
-During M2 testing, the engineer agent started editing the project's own source files while "fixing security issues." Test runs should probably use `--add-dir` or a working directory override to sandbox agent file access.
-
-### Shared vs. Independent CopilotClient
-
-Currently, each Orchestrator creates its own CopilotClient (one Copilot CLI subprocess). For multi-team, we could share one CopilotClient across teams since `createSession()` is independent. This needs testing.
-
-### Task Scoping
-
-Agents are thorough — they'll spend 10+ minutes on a task if not constrained. The test harness timed out because the engineer was doing excellent but exhaustive work. Tasks may need time budgets or scope limits.
-
-### Channel Broadcast Scaling
-
-`team_send` pushes to ALL other agents via `session.send()`. With many agents, this could cause cascading responses. May need selective delivery (e.g., only agents subscribed to a channel).
+1. **Remove channels** — drop `team_send`, remove `#general` routing, simplify to DMs only
+2. **Add multi-team** — Team Registry, per-team orchestrators, `/api/teams/:id/` routing
+3. **Add mission system** — mission field on teams, `team_complete_mission` tool, mission update API
+4. **Add autonomy engine** — event-driven nudges + heartbeat timer
+5. **Add `team_spawn_agent` tool** — lead can spawn workers with scoped working directories
+6. **Add daemon lifecycle** — PID file, lazy start, crash recovery via `resumeSession()`
+7. **Add activity feed** — read-only projection of all events for observability
 
 ---
 
@@ -278,10 +433,6 @@ npm install
 
 # Start the gateway (port 3742)
 npm run gateway
-# or: npx tsx src/index.ts
-
-# Run the M1 test harness
-npm test
 
 # Type-check
 npx tsc --noEmit
@@ -299,34 +450,26 @@ npx tsc --noEmit
 # Health check
 curl http://localhost:3742/api/health
 
-# Spawn agents
-curl -X POST http://localhost:3742/api/agents \
+# Create a team (future API — not yet implemented)
+curl -X POST http://localhost:3742/api/teams \
   -H "Content-Type: application/json" \
-  -d '{"id":"lead","role":"team lead"}'
-
-curl -X POST http://localhost:3742/api/agents \
-  -H "Content-Type: application/json" \
-  -d '{"id":"dev","role":"software engineer"}'
-
-# Send a message to #general
-curl -X POST http://localhost:3742/api/channels/general/messages \
-  -H "Content-Type: application/json" \
-  -d '{"content":"Hello team, what can you help me with?"}'
-
-# Check responses
-curl http://localhost:3742/api/channels/general/messages
+  -d '{
+    "name": "api-rewrite",
+    "mission": "Rewrite the REST API from Express to Hono",
+    "workingDirectory": "/projects/my-app"
+  }'
 
 # Check team status
-curl http://localhost:3742/api/status
-```
+curl http://localhost:3742/api/teams/api-rewrite
 
-### WebSocket (Node.js)
+# Send the team a message
+curl -X POST http://localhost:3742/api/teams/api-rewrite/messages \
+  -H "Content-Type: application/json" \
+  -d '{"content":"Focus on the auth endpoints first"}'
 
-```javascript
-import WebSocket from "ws";
-const ws = new WebSocket("ws://localhost:3742/ws");
-ws.on("message", (data) => {
-  const event = JSON.parse(data.toString());
-  console.log(event.type, event);
-});
+# Check activity
+curl http://localhost:3742/api/teams/api-rewrite/activity
+
+# Check tasks
+curl http://localhost:3742/api/teams/api-rewrite/tasks
 ```
