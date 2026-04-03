@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { Orchestrator } from "./orchestrator.js";
 import type { OrchestratorOptions } from "./orchestrator.js";
+import { AutonomyEngine } from "./autonomy-engine.js";
 import type { CopilotClient } from "@github/copilot-sdk";
 import type { TeamInfo, TeamStatus, ServerEvent, TeamStatusState } from "./types.js";
 
@@ -21,6 +22,7 @@ export interface TeamConfig {
  */
 export class TeamRegistry extends EventEmitter {
   private teams: Map<string, Orchestrator> = new Map();
+  private engines: Map<string, AutonomyEngine> = new Map();
   private client: CopilotClient | null = null;
   private baseDir: string;
 
@@ -75,6 +77,11 @@ export class TeamRegistry extends EventEmitter {
     if (config.mission) {
       orchestrator.setMission(config.mission);
     }
+
+    // Start autonomy engine for this team
+    const engine = new AutonomyEngine(orchestrator);
+    engine.start();
+    this.engines.set(config.id, engine);
 
     const teamInfo = this.getTeamInfo(config.id)!;
     this.emit("event", { type: "team.created", team: teamInfo } satisfies ServerEvent);
@@ -132,6 +139,13 @@ export class TeamRegistry extends EventEmitter {
     const orch = this.teams.get(id);
     if (!orch) throw new Error(`Team "${id}" not found`);
 
+    // Stop autonomy engine first
+    const engine = this.engines.get(id);
+    if (engine) {
+      engine.stop();
+      this.engines.delete(id);
+    }
+
     await orch.stop();
     this.teams.delete(id);
 
@@ -149,6 +163,10 @@ export class TeamRegistry extends EventEmitter {
   pauseTeam(id: string): void {
     const orch = this.teams.get(id);
     if (!orch) throw new Error(`Team "${id}" not found`);
+
+    const engine = this.engines.get(id);
+    if (engine) engine.stop();
+
     orch.pause();
   }
 
@@ -157,6 +175,9 @@ export class TeamRegistry extends EventEmitter {
     const orch = this.teams.get(id);
     if (!orch) throw new Error(`Team "${id}" not found`);
     orch.resume();
+
+    const engine = this.engines.get(id);
+    if (engine) engine.start();
   }
 
   /** Stop all teams (called on daemon shutdown) */
