@@ -639,3 +639,63 @@ curl http://localhost:3742/api/teams/api-rewrite/activity
 # Check tasks
 curl http://localhost:3742/api/teams/api-rewrite/tasks
 ```
+
+---
+
+## Future: Role Templates
+
+> **Status**: Not yet designed or implemented. Captured here for future exploration.
+
+When spinning up teams frequently, the same types of workers appear repeatedly — QA testers, backend engineers, security researchers. Currently the lead describes each worker's focus in the spawn call. Role templates would let users define reusable agent archetypes so that knowledge is codified once and applied consistently.
+
+### Concept
+
+A role template is a markdown file that defines a worker's persistent operating instructions — what they care about, how they work, and what standards they follow. Templates live in a known directory:
+
+```
+~/.copilot-teams/roles/          ← global templates (personal library)
+<workingDir>/.copilot-teams/roles/  ← project-specific templates
+```
+
+**Example** (`~/.copilot-teams/roles/qa-tester.md`):
+
+```markdown
+# QA Tester
+
+## Focus Areas
+- Test coverage for all public APIs
+- Edge cases: empty inputs, max limits, concurrent access
+- Regression tests for any changed behavior
+
+## Working Style
+- Always run the existing test suite before writing new tests
+- Prefer integration tests over unit tests for API endpoints
+- Report findings with reproducible steps, not just "it's broken"
+
+## Standards
+- Tests must be deterministic — no flaky tests
+- Use the project's existing test framework, don't introduce new ones
+```
+
+### How It Would Work
+
+When the lead spawns a worker, the `role` field doubles as a template lookup:
+
+```
+team_spawn_agent({ id: "tester", role: "qa-tester" })
+→ looks up qa-tester.md → injects as system prompt layer 5
+```
+
+Resolution order (first match wins):
+1. Project-level: `<workingDirectory>/.copilot-teams/roles/<role>.md`
+2. Global: `~/.copilot-teams/roles/<role>.md`
+3. None found: generic worker prompt only (lead's spawn-time description is the only context)
+
+The lead could also pass `additionalInstructions` to extend a template for a specific task without redefining the whole role.
+
+### Why This Matters Later
+
+- **Consistency**: The QA tester behaves the same way across every team, every project
+- **Institutional knowledge**: Best practices get encoded once, not re-prompted every time
+- **Role discovery**: The lead could list available templates and make informed staffing decisions
+- **Shareability**: Role templates can be version-controlled and shared across a team/org
