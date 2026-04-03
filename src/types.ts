@@ -49,7 +49,43 @@ export interface Activity {
 
 export type TeamStatusState = "active" | "completed" | "paused" | "shutdown";
 
+// ── Team (multi-team) ──────────────────────────────────────────
+
+export interface TeamInfo {
+  id: string;
+  state: TeamStatusState;
+  mission: Mission | null;
+  workingDirectory: string;
+  agentCount: number;
+  createdAt: number;
+}
+
+export interface TeamStatus {
+  id: string;
+  state: TeamStatusState;
+  mission: Mission | null;
+  workingDirectory: string;
+  agents: Agent[];
+  tasks: Task[];
+  createdAt: number;
+}
+
+export interface DaemonStatus {
+  pid: number;
+  port: number;
+  uptime: number;
+  started: string;
+  teams: TeamInfo[];
+}
+
 // ── REST request/response shapes ───────────────────────────────
+
+export interface CreateTeamRequest {
+  id: string;
+  mission?: string;
+  workingDirectory?: string;
+  leadPrompt?: string;
+}
 
 export interface CreateAgentRequest {
   id: string;
@@ -75,32 +111,28 @@ export interface UpdateMissionRequest {
   text: string;
 }
 
-export interface TeamStatus {
-  state: TeamStatusState;
-  mission: Mission | null;
-  agents: Agent[];
-  tasks: Task[];
-}
-
 // ── WebSocket event types ──────────────────────────────────────
 
 export type ServerEvent =
-  | { type: "agent.joined"; agent: Agent }
-  | { type: "agent.left"; agentId: string }
-  | { type: "agent.status"; agentId: string; status: Agent["status"]; currentTask: string | null }
-  | { type: "message.dm"; message: Message }
-  | { type: "task.created"; task: Task }
-  | { type: "task.claimed"; taskId: string; agentId: string }
-  | { type: "task.completed"; taskId: string; agentId: string; result: string }
-  | { type: "task.unblocked"; task: Task }
-  | { type: "mission.updated"; text: string }
-  | { type: "mission.completed"; summary: string }
-  | { type: "agent.thinking"; agentId: string; content: string }
-  | { type: "activity"; activity: Activity }
+  | { type: "agent.joined"; teamId: string; agent: Agent }
+  | { type: "agent.left"; teamId: string; agentId: string }
+  | { type: "agent.status"; teamId: string; agentId: string; status: Agent["status"]; currentTask: string | null }
+  | { type: "message.dm"; teamId: string; message: Message }
+  | { type: "task.created"; teamId: string; task: Task }
+  | { type: "task.claimed"; teamId: string; taskId: string; agentId: string }
+  | { type: "task.completed"; teamId: string; taskId: string; agentId: string; result: string }
+  | { type: "task.unblocked"; teamId: string; task: Task }
+  | { type: "mission.updated"; teamId: string; text: string }
+  | { type: "mission.completed"; teamId: string; summary: string }
+  | { type: "agent.thinking"; teamId: string; agentId: string; content: string }
+  | { type: "activity"; teamId: string; activity: Activity }
+  | { type: "team.created"; team: TeamInfo }
+  | { type: "team.deleted"; teamId: string }
+  | { type: "team.state_changed"; teamId: string; state: TeamStatusState }
   | { type: "error"; message: string };
 
 export type ClientCommand =
-  | { type: "message"; content: string }
-  | { type: "dm"; to: string; content: string }
-  | { type: "mission.update"; text: string }
-  | { type: "task.create"; id: string; title: string; description?: string; dependsOn?: string[]; assignee?: string };
+  | { type: "message"; teamId: string; content: string }
+  | { type: "dm"; teamId: string; to: string; content: string }
+  | { type: "mission.update"; teamId: string; text: string }
+  | { type: "task.create"; teamId: string; id: string; title: string; description?: string; dependsOn?: string[]; assignee?: string };

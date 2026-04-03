@@ -8,6 +8,7 @@
     "build": "tsc",
     "start": "node --enable-source-maps dist/index.js",
     "dev": "tsx src/index.ts",
+    "cpt": "tsx src/cli.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "tsx src/test-harness.ts",

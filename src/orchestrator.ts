@@ -1,9 +1,10 @@
 import { EventEmitter } from "node:events";
-import { CopilotClient, approveAll } from "@github/copilot-sdk";
+import type { CopilotClient } from "@github/copilot-sdk";
+import { approveAll } from "@github/copilot-sdk";
 import { TeamState } from "./team-state.js";
 import type { TeamMessage } from "./team-state.js";
 import { createTeamTools } from "./team-tools.js";
-import type { Agent, Task, Message, Activity, Mission, ServerEvent, TeamStatusState } from "./types.js";
+import type { Agent, Task, Message, Activity, Mission, TeamStatusState } from "./types.js";
 
 export type EventBus = EventEmitter;
 
@@ -57,42 +58,66 @@ export interface SpawnAgentOptions {
   workingDirectory?: string;
 }
 
+export interface OrchestratorOptions {
+  teamId?: string;
+  dbPath?: string;
+  workingDirectory?: string;
+  leadPrompt?: string;
+  client?: CopilotClient;
+}
+
 export class Orchestrator extends EventEmitter {
+  readonly teamId: string;
   private client: CopilotClient | null = null;
+  private ownsClient: boolean;
   private state: TeamState;
   private started = false;
   private teamState: TeamStatusState = "active";
   private workingDirectory: string;
   private leadPrompt?: string;
+  readonly createdAt: number = Date.now();
 
-  constructor(options: {
-    dbPath?: string;
-    workingDirectory?: string;
-    leadPrompt?: string;
-  } = {}) {
+  constructor(options: OrchestratorOptions = {}) {
     super();
+    this.teamId = options.teamId ?? "default";
     this.state = new TeamState(options.dbPath ?? ":memory:");
     this.workingDirectory = options.workingDirectory ?? process.cwd();
     this.leadPrompt = options.leadPrompt;
+
+    if (options.client) {
+      this.client = options.client;
+      this.ownsClient = false;
+      this.started = true;
+    } else {
+      this.ownsClient = true;
+    }
   }
 
+  /** Start the orchestrator. Only creates a CopilotClient if none was injected. */
   async start(): Promise<void> {
     if (this.started) return;
-    this.client = new CopilotClient();
-    await this.client.start();
+    if (this.ownsClient) {
+      const { CopilotClient } = await import("@github/copilot-sdk");
+      this.client = new CopilotClient();
+      await this.client.start();
+    }
     this.started = true;
-    console.log("✅ Orchestrator started (CopilotClient ready)");
+    console.log(`✅ Orchestrator [${this.teamId}] started`);
   }
 
+  /** Stop the orchestrator. Only stops the CopilotClient if this orchestrator owns it. */
   async stop(): Promise<void> {
-    if (!this.started || !this.client) return;
+    if (!this.started) return;
     for (const [id] of this.state.getAllSessions()) {
       await this.despawnAgent(id);
     }
-    await this.client.stop();
+    if (this.ownsClient && this.client) {
+      await this.client.stop();
+    }
     this.state.close();
     this.started = false;
-    console.log("🛑 Orchestrator stopped");
+    this.teamState = "shutdown";
+    console.log(`🛑 Orchestrator [${this.teamId}] stopped`);
   }
 
   async spawnAgent(opts: SpawnAgentOptions): Promise<Agent> {
@@ -132,16 +157,12 @@ export class Orchestrator extends EventEmitter {
     this.state.registerAgent(opts.id, opts.role, model, session, agentWorkDir);
 
     session.on("assistant.message", (event) => {
-      console.log(`\n🤖 [${opts.id}]: ${event.data.content}`);
-      this.emit("event", {
-        type: "agent.thinking",
-        agentId: opts.id,
-        content: event.data.content,
-      } satisfies ServerEvent);
+      console.log(`\n🤖 [${this.teamId}/${opts.id}]: ${event.data.content}`);
+      this.emit("event", { type: "agent.thinking", agentId: opts.id, content: event.data.content });
     });
 
     session.on("tool.execution_start", (event) => {
-      console.log(`\n🔧 [${opts.id}] tool: ${event.data.toolName}`);
+      console.log(`\n🔧 [${this.teamId}/${opts.id}] tool: ${event.data.toolName}`);
     });
 
     const agent: Agent = {
@@ -154,8 +175,8 @@ export class Orchestrator extends EventEmitter {
     };
 
     this.state.logActivity("agent.joined", opts.id, { role: opts.role, model, workingDirectory: agentWorkDir });
-    this.emit("event", { type: "agent.joined", agent } satisfies ServerEvent);
-    console.log(`✅ Spawned agent: ${opts.id} (${opts.role}, ${model}, dir: ${agentWorkDir})`);
+    this.emit("event", { type: "agent.joined", agent });
+    console.log(`✅ [${this.teamId}] Spawned agent: ${opts.id} (${opts.role}, ${model}, dir: ${agentWorkDir})`);
     return agent;
   }
 
@@ -166,8 +187,8 @@ export class Orchestrator extends EventEmitter {
     }
     this.state.deregisterAgent(id);
     this.state.logActivity("agent.left", id, {});
-    this.emit("event", { type: "agent.left", agentId: id } satisfies ServerEvent);
-    console.log(`👋 Despawned agent: ${id}`);
+    this.emit("event", { type: "agent.left", agentId: id });
+    console.log(`👋 [${this.teamId}] Despawned agent: ${id}`);
   }
 
   /** Send a user message to the lead */
@@ -177,8 +198,7 @@ export class Orchestrator extends EventEmitter {
 
     const msg = this.state.addMessage(from, content, null, roster[0].id);
     const apiMsg = toApiMessage(msg);
-    this.emit("event", { type: "message.dm", message: apiMsg } satisfies ServerEvent);
-    console.log(`\n📨 [user → ${roster[0].id}]: ${content}`);
+    this.emit("event", { type: "message.dm", message: apiMsg });
 
     const leadSession = this.state.getSession(roster[0].id);
     if (leadSession) {
@@ -197,8 +217,7 @@ export class Orchestrator extends EventEmitter {
 
     const msg = this.state.addMessage(from, content, null, to);
     const apiMsg = toApiMessage(msg);
-    this.emit("event", { type: "message.dm", message: apiMsg } satisfies ServerEvent);
-    console.log(`\n📨 [DM] ${from} → ${to}: ${content}`);
+    this.emit("event", { type: "message.dm", message: apiMsg });
 
     await session.send({
       prompt: `[DM from ${from}]: ${content}`,
@@ -212,8 +231,7 @@ export class Orchestrator extends EventEmitter {
   setMission(text: string): void {
     this.state.setMission(text);
     this.teamState = "active";
-    this.emit("event", { type: "mission.updated", text } satisfies ServerEvent);
-    console.log(`\n🎯 Mission updated: ${text}`);
+    this.emit("event", { type: "mission.updated", text });
 
     const roster = this.state.getRoster();
     if (roster.length > 0) {
@@ -239,8 +257,23 @@ export class Orchestrator extends EventEmitter {
   completeMission(summary: string): void {
     this.teamState = "completed";
     this.state.logActivity("mission.completed", null, { summary });
-    this.emit("event", { type: "mission.completed", summary } satisfies ServerEvent);
-    console.log(`\n🎯 Mission completed: ${summary}`);
+    this.emit("event", { type: "mission.completed", summary });
+  }
+
+  // ── Lifecycle ───────────────────────────────────────────────
+
+  pause(): void {
+    if (this.teamState !== "active") return;
+    this.teamState = "paused";
+    this.state.logActivity("team.paused", null, {});
+    this.emit("event", { type: "team.state_changed", state: "paused" });
+  }
+
+  resume(): void {
+    if (this.teamState !== "paused") return;
+    this.teamState = "active";
+    this.state.logActivity("team.resumed", null, {});
+    this.emit("event", { type: "team.state_changed", state: "active" });
   }
 
   // ── Queries ─────────────────────────────────────────────────
@@ -308,7 +341,7 @@ export class Orchestrator extends EventEmitter {
       result: t.result,
       createdAt: t.created_at,
     };
-    this.emit("event", { type: "task.created", task } satisfies ServerEvent);
+    this.emit("event", { type: "task.created", task });
     return task;
   }
 

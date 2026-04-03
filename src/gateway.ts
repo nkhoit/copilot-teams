@@ -2,54 +2,73 @@ import express from "express";
 import cors from "cors";
 import { createServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
-import { Orchestrator } from "./orchestrator.js";
+import { Daemon } from "./daemon.js";
+import { TeamRegistry } from "./team-registry.js";
 import type { ServerEvent, ClientCommand } from "./types.js";
 
 const DEFAULT_PORT = 3742;
 
-export function createGateway(orchestrator: Orchestrator) {
+export function createGateway(daemon: Daemon) {
   const app = express();
   app.use(cors());
   app.use(express.json());
 
   const server = createServer(app);
   const wss = new WebSocketServer({ server, path: "/ws" });
-  const clients = new Set<WebSocket>();
+
+  const registry = daemon.getRegistry();
+
+  // Track WebSocket clients and their team subscriptions
+  const clients = new Map<WebSocket, string | null>(); // null = all teams
 
   function broadcast(event: ServerEvent) {
     const data = JSON.stringify(event);
-    for (const ws of clients) {
-      if (ws.readyState === WebSocket.OPEN) {
+    const teamId = "teamId" in event ? (event as any).teamId : null;
+
+    for (const [ws, filter] of clients) {
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      // Send if client subscribes to all teams (null) or this specific team
+      if (filter === null || filter === teamId) {
         ws.send(data);
       }
     }
   }
 
-  orchestrator.on("event", (event: ServerEvent) => {
+  // Pipe registry events to WebSocket clients
+  registry.on("event", (event: ServerEvent) => {
     broadcast(event);
   });
 
   // ── WebSocket handling ──────────────────────────────────────
 
-  wss.on("connection", (ws) => {
-    clients.add(ws);
-    console.log(`🔌 WebSocket client connected (${clients.size} total)`);
+  wss.on("connection", (ws, req) => {
+    // Parse ?team=<id> from query string
+    const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+    const teamFilter = url.searchParams.get("team");
+    clients.set(ws, teamFilter);
+    console.log(`🔌 WebSocket connected (team=${teamFilter ?? "all"}, ${clients.size} total)`);
 
     ws.on("message", async (raw) => {
       try {
         const cmd: ClientCommand = JSON.parse(raw.toString());
+        const orch = registry.getTeam(cmd.teamId);
+        if (!orch) {
+          ws.send(JSON.stringify({ type: "error", message: `Team "${cmd.teamId}" not found` }));
+          return;
+        }
+
         switch (cmd.type) {
           case "message":
-            await orchestrator.sendMessage(cmd.content);
+            await orch.sendMessage(cmd.content);
             break;
           case "dm":
-            await orchestrator.sendDM(cmd.to, cmd.content);
+            await orch.sendDM(cmd.to, cmd.content);
             break;
           case "mission.update":
-            orchestrator.setMission(cmd.text);
+            orch.setMission(cmd.text);
             break;
           case "task.create":
-            orchestrator.createTask(cmd.id, cmd.title, cmd.description, cmd.dependsOn, cmd.assignee);
+            orch.createTask(cmd.id, cmd.title, cmd.description, cmd.dependsOn, cmd.assignee);
             break;
           default:
             ws.send(JSON.stringify({ type: "error", message: `Unknown command: ${(cmd as any).type}` }));
@@ -61,50 +80,110 @@ export function createGateway(orchestrator: Orchestrator) {
 
     ws.on("close", () => {
       clients.delete(ws);
-      console.log(`🔌 WebSocket client disconnected (${clients.size} total)`);
+      console.log(`🔌 WebSocket disconnected (${clients.size} total)`);
     });
   });
 
-  // ── REST: Health ────────────────────────────────────────────
+  // ── REST: Health & Daemon ──────────────────────────────────
 
   app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", started: orchestrator.isStarted() });
+    res.json({ status: "ok" });
   });
 
-  // ── REST: Team Status ───────────────────────────────────────
-
-  app.get("/api/status", (_req, res) => {
-    res.json({
-      state: orchestrator.getTeamState(),
-      mission: orchestrator.getMission(),
-      agents: orchestrator.getAgents(),
-      tasks: orchestrator.getTasks(),
-    });
+  app.get("/api/daemon/status", (_req, res) => {
+    res.json(daemon.getStatus());
   });
 
-  // ── REST: Agents ────────────────────────────────────────────
+  // ── REST: Teams CRUD ──────────────────────────────────────
 
-  app.get("/api/agents", (_req, res) => {
-    res.json(orchestrator.getAgents());
+  app.get("/api/teams", (_req, res) => {
+    res.json(registry.listTeams());
   });
 
-  app.get("/api/agents/:id", (req, res) => {
-    const agent = orchestrator.getAgent(req.params.id);
+  app.post("/api/teams", async (req, res) => {
+    try {
+      const { id, mission, workingDirectory, leadPrompt } = req.body;
+      if (!id) return res.status(400).json({ error: "id is required" });
+
+      await registry.createTeam({
+        id,
+        mission,
+        workingDirectory: workingDirectory ?? process.cwd(),
+        leadPrompt,
+        createdAt: Date.now(),
+      });
+
+      res.status(201).json(registry.getTeamStatus(id));
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/teams/:teamId", (req, res) => {
+    const status = registry.getTeamStatus(req.params.teamId);
+    if (!status) return res.status(404).json({ error: "Team not found" });
+    res.json(status);
+  });
+
+  app.delete("/api/teams/:teamId", async (req, res) => {
+    try {
+      await registry.deleteTeam(req.params.teamId);
+      res.status(204).send();
+    } catch (err: any) {
+      res.status(404).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/teams/:teamId/pause", (req, res) => {
+    try {
+      registry.pauseTeam(req.params.teamId);
+      res.json({ state: "paused" });
+    } catch (err: any) {
+      res.status(404).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/teams/:teamId/resume", (req, res) => {
+    try {
+      registry.resumeTeam(req.params.teamId);
+      res.json({ state: "active" });
+    } catch (err: any) {
+      res.status(404).json({ error: err.message });
+    }
+  });
+
+  // ── Middleware: resolve team orchestrator ───────────────────
+
+  function resolveTeam(req: express.Request, res: express.Response, next: express.NextFunction) {
+    const teamId = req.params.teamId as string;
+    const orch = registry.getTeam(teamId);
+    if (!orch) return res.status(404).json({ error: `Team "${teamId}" not found` });
+    (req as any).orchestrator = orch;
+    next();
+  }
+
+  // ── REST: Per-Team Agents ──────────────────────────────────
+
+  app.get("/api/teams/:teamId/agents", resolveTeam, (req, res) => {
+    res.json((req as any).orchestrator.getAgents());
+  });
+
+  app.get("/api/teams/:teamId/agents/:agentId", resolveTeam, (req, res) => {
+    const agent = (req as any).orchestrator.getAgent(req.params.agentId);
     if (!agent) return res.status(404).json({ error: "Agent not found" });
     res.json(agent);
   });
 
-  app.post("/api/agents", async (req, res) => {
+  app.post("/api/teams/:teamId/agents", resolveTeam, async (req, res) => {
     try {
+      const orch = (req as any).orchestrator;
       const { id, role, model, systemPrompt, workingDirectory } = req.body;
-      if (!id || !role) {
-        return res.status(400).json({ error: "id and role are required" });
-      }
-      const agent = await orchestrator.spawnAgent({
+      if (!id || !role) return res.status(400).json({ error: "id and role are required" });
+      const agent = await orch.spawnAgent({
         id,
         role,
         model,
-        isLead: orchestrator.getAgents().length === 0,
+        isLead: orch.getAgents().length === 0,
         systemPrompt,
         workingDirectory,
       });
@@ -114,123 +193,132 @@ export function createGateway(orchestrator: Orchestrator) {
     }
   });
 
-  app.delete("/api/agents/:id", async (req, res) => {
+  app.delete("/api/teams/:teamId/agents/:agentId", resolveTeam, async (req, res) => {
     try {
-      await orchestrator.despawnAgent(req.params.id);
+      await (req as any).orchestrator.despawnAgent(req.params.agentId);
       res.status(204).send();
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // ── REST: Messages ──────────────────────────────────────────
+  // ── REST: Per-Team Messages ────────────────────────────────
 
-  app.get("/api/messages", (req, res) => {
+  app.get("/api/teams/:teamId/messages", resolveTeam, (req, res) => {
     const limit = parseInt(req.query.limit as string) || 50;
-    res.json(orchestrator.getMessages(limit));
+    res.json((req as any).orchestrator.getMessages(limit));
   });
 
-  app.post("/api/messages", async (req, res) => {
+  app.post("/api/teams/:teamId/messages", resolveTeam, async (req, res) => {
     try {
       const { content } = req.body;
       if (!content) return res.status(400).json({ error: "content is required" });
-      const msg = await orchestrator.sendMessage(content);
+      const msg = await (req as any).orchestrator.sendMessage(content);
       res.status(201).json(msg);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  app.post("/api/dm/:agentId", async (req, res) => {
+  app.post("/api/teams/:teamId/dm/:agentId", resolveTeam, async (req, res) => {
     try {
       const { content } = req.body;
       if (!content) return res.status(400).json({ error: "content is required" });
-      const msg = await orchestrator.sendDM(req.params.agentId, content);
+      const msg = await (req as any).orchestrator.sendDM(req.params.agentId, content);
       res.status(201).json(msg);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // ── REST: Tasks ─────────────────────────────────────────────
+  // ── REST: Per-Team Tasks ───────────────────────────────────
 
-  app.get("/api/tasks", (req, res) => {
+  app.get("/api/teams/:teamId/tasks", resolveTeam, (req, res) => {
     const status = req.query.status as string | undefined;
-    res.json(orchestrator.getTasks(status));
+    res.json((req as any).orchestrator.getTasks(status));
   });
 
-  app.post("/api/tasks", (req, res) => {
+  app.post("/api/teams/:teamId/tasks", resolveTeam, (req, res) => {
     try {
       const { id, title, description, dependsOn, assignee } = req.body;
       if (!id || !title) return res.status(400).json({ error: "id and title are required" });
-      const task = orchestrator.createTask(id, title, description, dependsOn, assignee);
+      const task = (req as any).orchestrator.createTask(id, title, description, dependsOn, assignee);
       res.status(201).json(task);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // ── REST: Mission ───────────────────────────────────────────
+  // ── REST: Per-Team Mission ─────────────────────────────────
 
-  app.get("/api/mission", (_req, res) => {
-    const mission = orchestrator.getMission();
+  app.get("/api/teams/:teamId/mission", resolveTeam, (_req, res) => {
+    const mission = (_req as any).orchestrator.getMission();
     if (!mission) return res.status(404).json({ error: "No mission set" });
     res.json(mission);
   });
 
-  app.put("/api/mission", (req, res) => {
+  app.put("/api/teams/:teamId/mission", resolveTeam, (req, res) => {
     try {
       const { text } = req.body;
       if (!text) return res.status(400).json({ error: "text is required" });
-      orchestrator.setMission(text);
-      res.json(orchestrator.getMission());
+      (req as any).orchestrator.setMission(text);
+      res.json((req as any).orchestrator.getMission());
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // ── REST: Activity ──────────────────────────────────────────
+  // ── REST: Per-Team Activity ────────────────────────────────
 
-  app.get("/api/activity", (req, res) => {
+  app.get("/api/teams/:teamId/activity", resolveTeam, (req, res) => {
     const limit = parseInt(req.query.limit as string) || 50;
-    res.json(orchestrator.getActivity(limit));
+    res.json((req as any).orchestrator.getActivity(limit));
   });
 
   return { app, server, wss };
 }
 
 export async function startGateway(port: number = DEFAULT_PORT): Promise<void> {
-  const orchestrator = new Orchestrator();
+  const daemon = new Daemon({ port });
 
-  console.log("⏳ Starting orchestrator...");
-  await orchestrator.start();
+  // Check if another daemon is running
+  if (Daemon.isRunning()) {
+    const existing = Daemon.readDaemonConfig();
+    console.error(`❌ Another daemon is already running (PID ${existing?.pid}, port ${existing?.port})`);
+    process.exit(1);
+  }
 
-  const { server } = createGateway(orchestrator);
+  daemon.writePidFile();
+
+  const { server } = createGateway(daemon);
 
   server.listen(port, () => {
-    console.log(`\n🌐 Gateway running on http://localhost:${port}`);
+    console.log(`\n🌐 Daemon running on http://localhost:${port}`);
     console.log(`   WebSocket: ws://localhost:${port}/ws`);
     console.log(`   REST API:  http://localhost:${port}/api\n`);
     console.log("Endpoints:");
     console.log("  GET    /api/health");
-    console.log("  GET    /api/status");
-    console.log("  GET    /api/agents");
-    console.log("  POST   /api/agents         { id, role, model?, workingDirectory? }");
-    console.log("  DELETE /api/agents/:id");
-    console.log("  GET    /api/messages");
-    console.log("  POST   /api/messages       { content }");
-    console.log("  POST   /api/dm/:agentId    { content }");
-    console.log("  GET    /api/tasks");
-    console.log("  POST   /api/tasks          { id, title, description?, dependsOn?, assignee? }");
-    console.log("  GET    /api/mission");
-    console.log("  PUT    /api/mission         { text }");
-    console.log("  GET    /api/activity");
+    console.log("  GET    /api/daemon/status");
+    console.log("  POST   /api/teams               { id, mission?, workingDirectory? }");
+    console.log("  GET    /api/teams");
+    console.log("  GET    /api/teams/:id");
+    console.log("  DELETE /api/teams/:id");
+    console.log("  POST   /api/teams/:id/pause");
+    console.log("  POST   /api/teams/:id/resume");
+    console.log("  POST   /api/teams/:id/agents     { id, role, model?, workingDirectory? }");
+    console.log("  DELETE /api/teams/:id/agents/:agentId");
+    console.log("  POST   /api/teams/:id/messages   { content }");
+    console.log("  POST   /api/teams/:id/dm/:agentId { content }");
+    console.log("  GET    /api/teams/:id/tasks");
+    console.log("  POST   /api/teams/:id/tasks      { id, title, description?, dependsOn? }");
+    console.log("  GET    /api/teams/:id/mission");
+    console.log("  PUT    /api/teams/:id/mission     { text }");
+    console.log("  GET    /api/teams/:id/activity");
     console.log("");
   });
 
   const shutdown = async () => {
-    console.log("\n🛑 Shutting down...");
-    await orchestrator.stop();
+    await daemon.shutdown();
     server.close();
     process.exit(0);
   };
