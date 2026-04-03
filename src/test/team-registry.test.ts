@@ -15,7 +15,12 @@ describe("TeamRegistry", () => {
 
   afterEach(async () => {
     await registry.stopAll();
-    rmSync(tempDir, { recursive: true, force: true });
+    // On Windows, SQLite may not release file locks immediately
+    try {
+      rmSync(tempDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    } catch {
+      // Best-effort cleanup
+    }
   });
 
   // ── Team CRUD ─────────────────────────────────────────────
@@ -253,6 +258,202 @@ describe("TeamRegistry", () => {
 
       expect(registry.getTeam("alpha")!.getWorkingDirectory()).toBe("/project/frontend");
       expect(registry.getTeam("beta")!.getWorkingDirectory()).toBe("/project/backend");
+    });
+  });
+
+  // ── Crash Recovery ──────────────────────────────────────────
+
+  describe("crash recovery", () => {
+    it("disconnectTeam preserves config on disk", async () => {
+      await registry.createTeam({
+        id: "alpha",
+        workingDirectory: "/tmp/alpha",
+        createdAt: Date.now(),
+      });
+
+      await registry.disconnectTeam("alpha");
+      expect(registry.hasTeam("alpha")).toBe(false);
+
+      // Config should still be on disk
+      const configs = registry.loadPersistedTeams();
+      expect(configs).toHaveLength(1);
+      expect(configs[0].id).toBe("alpha");
+    });
+
+    it("deleteTeam removes config from disk", async () => {
+      await registry.createTeam({
+        id: "alpha",
+        workingDirectory: "/tmp/alpha",
+        createdAt: Date.now(),
+      });
+
+      await registry.deleteTeam("alpha");
+
+      // Config should be gone
+      const configs = registry.loadPersistedTeams();
+      expect(configs).toHaveLength(0);
+    });
+
+    it("stopAll preserves all team configs", async () => {
+      await registry.createTeam({ id: "alpha", workingDirectory: "/tmp/a", createdAt: Date.now() });
+      await registry.createTeam({ id: "beta", workingDirectory: "/tmp/b", createdAt: Date.now() });
+
+      await registry.stopAll();
+      expect(registry.size).toBe(0);
+
+      // Both configs should still be on disk
+      const configs = registry.loadPersistedTeams();
+      expect(configs).toHaveLength(2);
+    });
+
+    it("restoreTeams recreates teams from persisted configs", async () => {
+      // Create teams with tasks and missions
+      const orch = await registry.createTeam({
+        id: "alpha",
+        workingDirectory: "/tmp/alpha",
+        mission: "Build feature X",
+        createdAt: 1000,
+      });
+      orch.createTask("t1", "Task 1", "Do thing 1");
+
+      await registry.createTeam({
+        id: "beta",
+        workingDirectory: "/tmp/beta",
+        createdAt: 2000,
+      });
+
+      // Simulate daemon shutdown
+      await registry.stopAll();
+
+      // Create a fresh registry (simulates new daemon process)
+      const registry2 = new TeamRegistry(tempDir);
+      const restored = await registry2.restoreTeams();
+
+      expect(restored).toBe(2);
+      expect(registry2.hasTeam("alpha")).toBe(true);
+      expect(registry2.hasTeam("beta")).toBe(true);
+
+      // Verify team state is restored
+      const alphaInfo = registry2.getTeamInfo("alpha");
+      expect(alphaInfo).toBeDefined();
+      expect(alphaInfo!.state).toBe("active");
+      expect(alphaInfo!.workingDirectory).toBe("/tmp/alpha");
+
+      // Verify tasks survived
+      const alphaTasks = registry2.getTeam("alpha")!.getTasks();
+      expect(alphaTasks).toHaveLength(1);
+      expect(alphaTasks[0].title).toBe("Task 1");
+
+      // Verify mission survived
+      const alphaMission = registry2.getTeam("alpha")!.getMission();
+      expect(alphaMission).toBeDefined();
+      expect(alphaMission!.text).toBe("Build feature X");
+
+      // Full cleanup — delete (not disconnect) to release DB file locks
+      await registry2.deleteTeam("alpha");
+      await registry2.deleteTeam("beta");
+    });
+
+    it("restoreTeams with agents resumes SDK sessions", async () => {
+      // Import mock
+      const { MockCopilotClient, MockCopilotSession } = await import("./mocks/copilot-sdk.js");
+      const client = new MockCopilotClient();
+      await client.start();
+
+      // Create registry with shared client
+      const reg = new TeamRegistry(tempDir);
+      reg.setClient(client as any);
+
+      const orch = await reg.createTeam({
+        id: "alpha",
+        workingDirectory: "/tmp/alpha",
+        createdAt: Date.now(),
+      });
+
+      // Spawn a lead agent
+      await orch.spawnAgent({ id: "lead", role: "coordinator", isLead: true });
+      const leadSessionId = client.createdSessions[0].sessionId;
+
+      // Verify agent is registered
+      expect(orch.getAgents()).toHaveLength(1);
+      expect(orch.getAgents()[0].id).toBe("lead");
+
+      // Simulate daemon shutdown (disconnect, not delete)
+      await reg.stopAll();
+
+      // Create fresh registry + client for restore
+      const client2 = new MockCopilotClient();
+      await client2.start();
+      const reg2 = new TeamRegistry(tempDir);
+      reg2.setClient(client2 as any);
+
+      const restored = await reg2.restoreTeams();
+      expect(restored).toBe(1);
+
+      // Verify session was resumed with the original session ID
+      expect(client2.resumedSessions.has(leadSessionId)).toBe(true);
+
+      // Verify agent is back on the roster
+      const agents = reg2.getTeam("alpha")!.getAgents();
+      expect(agents).toHaveLength(1);
+      expect(agents[0].id).toBe("lead");
+      expect(agents[0].role).toBe("coordinator");
+
+      // Verify messages can be sent to the restored session
+      const resumedSession = client2.resumedSessions.get(leadSessionId)!;
+      await reg2.getTeam("alpha")!.sendDM("lead", "Welcome back!");
+      expect(resumedSession.hasMessageContaining("Welcome back")).toBe(true);
+
+      await reg2.stopAll();
+    });
+
+    it("handles restore with failed session gracefully", async () => {
+      const { MockCopilotClient } = await import("./mocks/copilot-sdk.js");
+      const client = new MockCopilotClient();
+      await client.start();
+
+      const reg = new TeamRegistry(tempDir);
+      reg.setClient(client as any);
+
+      const orch = await reg.createTeam({
+        id: "alpha",
+        workingDirectory: "/tmp/alpha",
+        createdAt: Date.now(),
+      });
+      await orch.spawnAgent({ id: "lead", role: "coordinator", isLead: true });
+
+      await reg.stopAll();
+
+      // Restore with a client that's NOT started (will fail resumeSession)
+      const badClient = new MockCopilotClient();
+      // Don't call badClient.start() — resumeSession will throw
+      const reg2 = new TeamRegistry(tempDir);
+      reg2.setClient(badClient as any);
+
+      // Should not throw — gracefully handles failed restores
+      const restored = await reg2.restoreTeams();
+      expect(restored).toBe(1); // Team restored but agent dropped
+
+      // Team exists but agent was removed since session couldn't resume
+      expect(reg2.hasTeam("alpha")).toBe(true);
+      expect(reg2.getTeam("alpha")!.getAgents()).toHaveLength(0);
+
+      await reg2.stopAll();
+    });
+
+    it("skips already-active teams during restore", async () => {
+      await registry.createTeam({
+        id: "alpha",
+        workingDirectory: "/tmp/alpha",
+        createdAt: Date.now(),
+      });
+
+      // Try to restore while team is still active
+      const restored = await registry.restoreTeams();
+
+      // alpha already exists, so it's skipped
+      expect(restored).toBe(0);
+      expect(registry.size).toBe(1);
     });
   });
 });

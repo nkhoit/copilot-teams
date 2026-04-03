@@ -290,6 +290,24 @@ export async function startGateway(port: number = DEFAULT_PORT): Promise<void> {
 
   daemon.writePidFile();
 
+  // Restore persisted teams from previous session
+  const persisted = daemon.getRegistry().loadPersistedTeams();
+  if (persisted.length > 0) {
+    console.log(`♻️  Found ${persisted.length} persisted team(s), initializing SDK client...`);
+    try {
+      const { CopilotClient } = await import("@github/copilot-sdk");
+      const client = new CopilotClient();
+      await client.start();
+      daemon.getRegistry().setClient(client);
+
+      const restored = await daemon.getRegistry().restoreTeams();
+      console.log(`♻️  Restored ${restored}/${persisted.length} team(s)`);
+    } catch (err) {
+      console.error("⚠️ Failed to restore teams (SDK client error):", err);
+      console.log("   Teams can still be created manually via API.");
+    }
+  }
+
   const { server } = createGateway(daemon);
 
   server.listen(port, () => {

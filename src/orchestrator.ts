@@ -120,6 +120,102 @@ export class Orchestrator extends EventEmitter {
     console.log(`🛑 Orchestrator [${this.teamId}] stopped`);
   }
 
+  /**
+   * Disconnect all sessions but preserve agent rows in DB for resume.
+   * Used during graceful daemon shutdown (vs stop() which fully cleans up).
+   */
+  async disconnect(): Promise<void> {
+    if (!this.started) return;
+    for (const [id, session] of this.state.getAllSessions()) {
+      try {
+        await session.disconnect();
+        console.log(`💤 [${this.teamId}] Disconnected agent: ${id}`);
+      } catch (err) {
+        console.error(`Error disconnecting agent ${id}:`, err);
+      }
+    }
+    // Clear in-memory session refs but keep DB rows
+    this.state.clearSessions();
+    this.state.close();
+    this.started = false;
+    this.teamState = "shutdown";
+    console.log(`💤 Orchestrator [${this.teamId}] disconnected (state preserved)`);
+  }
+
+  /**
+   * Restore agent sessions from DB after a daemon restart.
+   * Reads persisted agent roster, resumes each SDK session, rebinds tools/events.
+   */
+  async restoreAgents(client: CopilotClient): Promise<number> {
+    this.client = client;
+    this.ownsClient = false;
+    this.started = true;
+    this.teamState = "active";
+
+    const roster = this.state.getRoster();
+    let restored = 0;
+
+    for (const agent of roster) {
+      if (!agent.sessionId) {
+        console.warn(`⚠️ [${this.teamId}] Agent "${agent.id}" has no session ID, skipping restore`);
+        continue;
+      }
+
+      try {
+        const isLead = roster.indexOf(agent) === 0;
+        const tools = createTeamTools(this.state, agent.id, {
+          eventBus: this,
+          isLead,
+          spawnAgent: isLead ? async (spawnOpts) => {
+            await this.spawnAgent({
+              id: spawnOpts.id,
+              role: spawnOpts.role,
+              model: spawnOpts.model,
+              workingDirectory: spawnOpts.workingDirectory,
+            });
+          } : undefined,
+          completeMission: isLead ? (summary) => {
+            this.completeMission(summary);
+          } : undefined,
+        });
+
+        const systemPrompt = isLead
+          ? buildLeadPrompt(agent.id, agent.role, this.leadPrompt)
+          : buildWorkerPrompt(agent.id, agent.role);
+
+        const session = await client.resumeSession(agent.sessionId, {
+          model: agent.model,
+          tools,
+          systemMessage: { mode: "append", content: systemPrompt },
+          workingDirectory: agent.workingDirectory ?? this.workingDirectory,
+          onPermissionRequest: approveAll,
+        });
+
+        this.state.setSession(agent.id, session);
+
+        session.on("assistant.message", (event) => {
+          console.log(`\n🤖 [${this.teamId}/${agent.id}]: ${event.data.content}`);
+          this.emit("event", { type: "agent.thinking", agentId: agent.id, content: event.data.content });
+        });
+
+        session.on("tool.execution_start", (event) => {
+          console.log(`\n🔧 [${this.teamId}/${agent.id}] tool: ${event.data.toolName}`);
+        });
+
+        restored++;
+        console.log(`♻️  [${this.teamId}] Restored agent: ${agent.id} (session: ${agent.sessionId})`);
+      } catch (err) {
+        console.error(`⚠️ [${this.teamId}] Failed to restore agent "${agent.id}":`, err);
+        // Remove stale agent from DB since session can't be resumed
+        this.state.deregisterAgent(agent.id);
+      }
+    }
+
+    this.state.logActivity("team.restored", null, { agentsRestored: restored, agentsTotal: roster.length });
+    console.log(`♻️  Orchestrator [${this.teamId}] restored (${restored}/${roster.length} agents)`);
+    return restored;
+  }
+
   async spawnAgent(opts: SpawnAgentOptions): Promise<Agent> {
     if (!this.client) throw new Error("Orchestrator not started");
 

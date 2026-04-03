@@ -165,6 +165,11 @@ export class TeamState {
     return this.sessions;
   }
 
+  /** Clear all in-memory session references (for disconnect without deregister) */
+  clearSessions(): void {
+    this.sessions.clear();
+  }
+
   setAgentStatus(id: string, status: "idle" | "working", currentTask?: string | null): void {
     this.db.prepare(
       "UPDATE agents SET status = ?, current_task = ? WHERE id = ?",

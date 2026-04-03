@@ -180,15 +180,94 @@ export class TeamRegistry extends EventEmitter {
     if (engine) engine.start();
   }
 
-  /** Stop all teams (called on daemon shutdown) */
+  /** Stop all teams (called on daemon shutdown) — preserves state for resume */
   async stopAll(): Promise<void> {
     for (const [id] of this.teams) {
       try {
-        await this.deleteTeam(id);
+        await this.disconnectTeam(id);
       } catch (err) {
-        console.error(`Error stopping team ${id}:`, err);
+        console.error(`Error disconnecting team ${id}:`, err);
       }
     }
+  }
+
+  /**
+   * Disconnect a team (graceful shutdown) — preserves config + DB for resume.
+   * Unlike deleteTeam, this keeps config.json on disk so the team can be restored.
+   */
+  async disconnectTeam(id: string): Promise<void> {
+    const engine = this.engines.get(id);
+    if (engine) {
+      engine.stop();
+      this.engines.delete(id);
+    }
+
+    const orch = this.teams.get(id);
+    if (orch) {
+      await orch.disconnect();
+      this.teams.delete(id);
+    }
+    console.log(`💤 Team disconnected: ${id} (state preserved)`);
+  }
+
+  /**
+   * Restore all persisted teams after daemon restart.
+   * Reads config.json files from disk, creates Orchestrators, resumes SDK sessions.
+   */
+  async restoreTeams(): Promise<number> {
+    const configs = this.loadPersistedTeams();
+    if (configs.length === 0) return 0;
+
+    console.log(`♻️  Found ${configs.length} team(s) to restore...`);
+    let restored = 0;
+
+    for (const config of configs) {
+      try {
+        if (this.teams.has(config.id)) {
+          console.warn(`⚠️ Team "${config.id}" already active, skipping restore`);
+          continue;
+        }
+
+        const teamDir = join(this.baseDir, config.id);
+        const dbPath = join(teamDir, "state.db");
+
+        // Create orchestrator pointing at existing DB
+        const orchestrator = new Orchestrator({
+          teamId: config.id,
+          dbPath,
+          workingDirectory: config.workingDirectory,
+          leadPrompt: config.leadPrompt,
+          client: this.client ?? undefined,
+        });
+
+        // Restore agent sessions from DB
+        if (this.client) {
+          const agentsRestored = await orchestrator.restoreAgents(this.client);
+          console.log(`♻️  Team "${config.id}": ${agentsRestored} agent(s) restored`);
+        }
+
+        // Forward orchestrator events with teamId
+        orchestrator.on("event", (event: any) => {
+          const enriched: ServerEvent = { ...event, teamId: config.id };
+          this.emit("event", enriched);
+        });
+
+        this.teams.set(config.id, orchestrator);
+
+        // Start autonomy engine
+        const engine = new AutonomyEngine(orchestrator);
+        engine.start();
+        this.engines.set(config.id, engine);
+
+        restored++;
+        console.log(`♻️  Team restored: ${config.id}`);
+      } catch (err) {
+        console.error(`⚠️ Failed to restore team "${config.id}":`, err);
+      }
+    }
+
+    console.log(`♻️  Restore complete: ${restored}/${configs.length} team(s)`);
+    return restored;
   }
 
   /** Check if a team exists */
