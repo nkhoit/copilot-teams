@@ -6,6 +6,16 @@ import type { EventBus } from "./orchestrator.js";
 
 const MAX_VOLLEY = 3;
 
+/** Callback for the lead to spawn new agents */
+export interface SpawnAgentFn {
+  (opts: { id: string; role: string; workingDirectory?: string; model?: string }): Promise<void>;
+}
+
+/** Callback for mission completion */
+export interface CompleteMissionFn {
+  (summary: string): void;
+}
+
 /**
  * Create the team coordination tools for a specific agent.
  * These tools are injected into each SDK session via defineTool().
@@ -13,36 +23,17 @@ const MAX_VOLLEY = 3;
 export function createTeamTools(
   state: TeamState,
   agentId: string,
-  eventBus?: EventBus,
+  options?: {
+    eventBus?: EventBus;
+    spawnAgent?: SpawnAgentFn;
+    completeMission?: CompleteMissionFn;
+    isLead?: boolean;
+  },
 ): Tool<any>[] {
-  const emit = (event: any) => eventBus?.emit("event", event);
+  const emit = (event: any) => options?.eventBus?.emit("event", event);
 
-  return [
+  const tools: Tool<any>[] = [
     // ── Communication ─────────────────────────────────────────
-
-    defineTool("team_send", {
-      description:
-        "Send a message to the #general channel. All team members can see it.",
-      parameters: z.object({
-        message: z.string().describe("The message content to post"),
-      }),
-      skipPermission: true,
-      handler: async ({ message }) => {
-        const msg = state.addMessage(agentId, message, "#general", null);
-        state.resetVolley(agentId);
-        console.log(`\n💬 [#general] ${agentId}: ${message}`);
-        emit({ type: "message.channel", message: msg });
-
-        for (const [id, session] of state.getAllSessions()) {
-          if (id !== agentId) {
-            await session.send({
-              prompt: `[#general — ${agentId}]: ${message}`,
-            });
-          }
-        }
-        return { sent: true, channel: "#general" };
-      },
-    }),
 
     defineTool("team_dm", {
       description:
@@ -68,13 +59,13 @@ export function createTeamTools(
         if (volley > MAX_VOLLEY) {
           return {
             blocked: true,
-            reason: `Volley limit (${MAX_VOLLEY}) reached with ${to}. Do real work (complete a task, post to #general) before DMing again.`,
+            reason: `Volley limit (${MAX_VOLLEY}) reached with ${to}. Do real work (complete a task) before DMing again.`,
           };
         }
 
         const msg = state.addMessage(agentId, message, null, to);
         console.log(`\n📨 [DM] ${agentId} → ${to}: ${message}`);
-        emit({ type: "message.dm", message: msg });
+        emit({ type: "message.dm", message: { id: msg.id, from: agentId, to, channel: null, content: message, timestamp: msg.timestamp } });
 
         const tag = expectsReply ? "" : " [NO REPLY NEEDED]";
         await recipient.send({
@@ -110,7 +101,6 @@ export function createTeamTools(
         console.log(`\n📋 Task created: ${id} (${task.status})`);
         emit({ type: "task.created", task: { ...task, dependsOn, createdAt: task.created_at } });
 
-        // Notify assignee
         if (assignee) {
           const session = state.getSession(assignee);
           if (session) {
@@ -177,7 +167,6 @@ export function createTeamTools(
           currentTask: null,
         });
 
-        // Notify agents about unblocked tasks
         for (const unblocked of outcome.unblocked) {
           console.log(`\n🔓 Task unblocked: ${unblocked.id}`);
           emit({
@@ -201,4 +190,55 @@ export function createTeamTools(
       },
     }),
   ];
+
+  // ── Lead-Only Tools ───────────────────────────────────────
+
+  if (options?.isLead && options.spawnAgent) {
+    const spawnAgent = options.spawnAgent;
+
+    tools.push(
+      defineTool("team_spawn_agent", {
+        description:
+          "Spawn a new team member with a specific role and working directory. Only the lead can use this.",
+        parameters: z.object({
+          id: z.string().describe("Unique agent ID (e.g., 'backend', 'tester')"),
+          role: z.string().describe("Description of the agent's role"),
+          workingDirectory: z.string().optional().describe("Directory this agent should work in"),
+          model: z.string().optional().describe("Model to use (default: claude-sonnet-4)"),
+        }),
+        skipPermission: true,
+        handler: async ({ id, role, workingDirectory, model }) => {
+          try {
+            await spawnAgent({ id, role, workingDirectory, model });
+            console.log(`\n👤 Lead spawned agent: ${id} (${role})`);
+            return { spawned: true, id, role, workingDirectory };
+          } catch (err: any) {
+            return { error: err.message };
+          }
+        },
+      }),
+    );
+  }
+
+  if (options?.isLead && options.completeMission) {
+    const completeMission = options.completeMission;
+
+    tools.push(
+      defineTool("team_complete_mission", {
+        description:
+          "Declare the current mission as fulfilled. Include a summary of what was accomplished.",
+        parameters: z.object({
+          summary: z.string().describe("Summary of what was accomplished"),
+        }),
+        skipPermission: true,
+        handler: async ({ summary }) => {
+          completeMission(summary);
+          console.log(`\n🎯 Mission completed: ${summary}`);
+          return { completed: true, summary };
+        },
+      }),
+    );
+  }
+
+  return tools;
 }

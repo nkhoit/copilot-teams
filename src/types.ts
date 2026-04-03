@@ -8,12 +8,7 @@ export interface Agent {
   model: string;
   status: "idle" | "working";
   currentTask: string | null;
-}
-
-export interface Channel {
-  id: string;
-  name: string;
-  description?: string;
+  workingDirectory: string | null;
 }
 
 export interface Message {
@@ -38,12 +33,29 @@ export interface Task {
   createdAt: number;
 }
 
+export interface Mission {
+  text: string;
+  updatedAt: number;
+  history: Array<{ text: string; updatedAt: number }>;
+}
+
+export interface Activity {
+  id: number;
+  type: string;
+  agentId: string | null;
+  data: Record<string, any>;
+  timestamp: number;
+}
+
+export type TeamStatusState = "active" | "completed" | "paused" | "shutdown";
+
 // ── REST request/response shapes ───────────────────────────────
 
 export interface CreateAgentRequest {
   id: string;
   role: string;
   model?: string;
+  workingDirectory?: string;
   systemPrompt?: string;
 }
 
@@ -59,10 +71,15 @@ export interface CreateTaskRequest {
   assignee?: string;
 }
 
+export interface UpdateMissionRequest {
+  text: string;
+}
+
 export interface TeamStatus {
+  state: TeamStatusState;
+  mission: Mission | null;
   agents: Agent[];
   tasks: Task[];
-  channels: Channel[];
 }
 
 // ── WebSocket event types ──────────────────────────────────────
@@ -71,16 +88,19 @@ export type ServerEvent =
   | { type: "agent.joined"; agent: Agent }
   | { type: "agent.left"; agentId: string }
   | { type: "agent.status"; agentId: string; status: Agent["status"]; currentTask: string | null }
-  | { type: "message.channel"; message: Message }
   | { type: "message.dm"; message: Message }
   | { type: "task.created"; task: Task }
   | { type: "task.claimed"; taskId: string; agentId: string }
   | { type: "task.completed"; taskId: string; agentId: string; result: string }
   | { type: "task.unblocked"; task: Task }
+  | { type: "mission.updated"; text: string }
+  | { type: "mission.completed"; summary: string }
   | { type: "agent.thinking"; agentId: string; content: string }
+  | { type: "activity"; activity: Activity }
   | { type: "error"; message: string };
 
 export type ClientCommand =
-  | { type: "message"; channel: string; content: string }
+  | { type: "message"; content: string }
   | { type: "dm"; to: string; content: string }
+  | { type: "mission.update"; text: string }
   | { type: "task.create"; id: string; title: string; description?: string; dependsOn?: string[]; assignee?: string };

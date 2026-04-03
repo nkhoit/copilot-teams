@@ -24,13 +24,60 @@ describe("Team Tools", () => {
     state.close();
   });
 
-  function getToolHandler(agentId: string, toolName: string) {
-    const tools = createTeamTools(state, agentId);
+  function getToolHandler(agentId: string, toolName: string, options?: { isLead?: boolean; spawnAgent?: any; completeMission?: any }) {
+    const tools = createTeamTools(state, agentId, {
+      isLead: options?.isLead,
+      spawnAgent: options?.spawnAgent,
+      completeMission: options?.completeMission,
+    });
     const tool = tools.find((t: any) => t.name === toolName);
     if (!tool) throw new Error(`Tool ${toolName} not found`);
-    // The tool object from defineTool has a handler property
     return (tool as any).handler;
   }
+
+  function getToolNames(agentId: string, options?: { isLead?: boolean; spawnAgent?: any; completeMission?: any }): string[] {
+    const tools = createTeamTools(state, agentId, {
+      isLead: options?.isLead,
+      spawnAgent: options?.spawnAgent,
+      completeMission: options?.completeMission,
+    });
+    return tools.map((t: any) => t.name);
+  }
+
+  // ── Tool availability ─────────────────────────────────────
+
+  describe("tool availability", () => {
+    it("worker agents get 6 base tools", () => {
+      const names = getToolNames("dev");
+      expect(names).toContain("team_dm");
+      expect(names).toContain("team_get_roster");
+      expect(names).toContain("team_create_task");
+      expect(names).toContain("team_get_tasks");
+      expect(names).toContain("team_claim_task");
+      expect(names).toContain("team_complete_task");
+      expect(names).not.toContain("team_spawn_agent");
+      expect(names).not.toContain("team_complete_mission");
+    });
+
+    it("lead agents get spawn + complete_mission tools when callbacks provided", () => {
+      const spawnFn = async () => {};
+      const completeFn = () => {};
+      const names = getToolNames("lead", { isLead: true, spawnAgent: spawnFn, completeMission: completeFn });
+      expect(names).toContain("team_spawn_agent");
+      expect(names).toContain("team_complete_mission");
+    });
+
+    it("lead without callbacks does not get spawn/complete tools", () => {
+      const names = getToolNames("lead", { isLead: true });
+      expect(names).not.toContain("team_spawn_agent");
+      expect(names).not.toContain("team_complete_mission");
+    });
+
+    it("does NOT include team_send (removed)", () => {
+      const names = getToolNames("lead");
+      expect(names).not.toContain("team_send");
+    });
+  });
 
   // ── team_dm ───────────────────────────────────────────────
 
@@ -44,14 +91,13 @@ describe("Team Tools", () => {
       expect(devSession.hasMessageContaining("[DM from lead]")).toBe(true);
     });
 
-    it("records the message in SQLite", async () => {
+    it("records the message in SQLite as a DM", async () => {
       const handler = getToolHandler("lead", "team_dm");
       await handler({ to: "dev", message: "stored message", expectsReply: true });
 
-      // Messages are stored — we can verify via state
-      // The message should be in the DB (no channel, to_agent = "dev")
-      const messages = state.getChannelMessages("#general");
-      expect(messages).toHaveLength(0); // DMs don't appear in channels
+      const dms = state.getDMs("lead", "dev");
+      expect(dms).toHaveLength(1);
+      expect(dms[0].content).toBe("stored message");
     });
 
     it("tags NO REPLY NEEDED when expectsReply is false", async () => {
@@ -79,32 +125,13 @@ describe("Team Tools", () => {
     it("blocks after MAX_VOLLEY consecutive DMs", async () => {
       const handler = getToolHandler("lead", "team_dm");
 
-      // Send 3 DMs (MAX_VOLLEY = 3)
       await handler({ to: "dev", message: "msg 1", expectsReply: true });
       await handler({ to: "dev", message: "msg 2", expectsReply: true });
       await handler({ to: "dev", message: "msg 3", expectsReply: true });
 
-      // 4th should be blocked
       const result = await handler({ to: "dev", message: "msg 4", expectsReply: true });
       expect(result.blocked).toBe(true);
       expect(result.reason).toContain("Volley limit");
-    });
-
-    it("resets volley counter after real work", async () => {
-      const dmHandler = getToolHandler("lead", "team_dm");
-      const createHandler = getToolHandler("lead", "team_create_task");
-
-      // Hit volley limit
-      await dmHandler({ to: "dev", message: "msg 1", expectsReply: true });
-      await dmHandler({ to: "dev", message: "msg 2", expectsReply: true });
-      await dmHandler({ to: "dev", message: "msg 3", expectsReply: true });
-
-      // Do real work (create a task resets volley)
-      await createHandler({ id: "t1", title: "Task", description: "", dependsOn: [] });
-
-      // Note: team_create_task doesn't reset volley in current implementation.
-      // Only team_claim_task and team_complete_task reset it.
-      // So let's test with claim instead.
     });
   });
 
@@ -202,7 +229,6 @@ describe("Team Tools", () => {
     it("resets volley counter on claim", async () => {
       state.createTask("task-1", "Build API", "");
 
-      // Build up volley
       state.incrementVolley("dev", "lead");
       state.incrementVolley("dev", "lead");
       expect(state.getVolleyCount("dev", "lead")).toBe(2);
@@ -228,7 +254,6 @@ describe("Team Tools", () => {
       expect(result.completed).toBe(true);
       expect(result.unblocked).toHaveLength(1);
 
-      // dev should be notified about the unblocked task
       expect(devSession.hasMessageContaining("[TASK UNBLOCKED]")).toBe(true);
     });
 
@@ -243,6 +268,67 @@ describe("Team Tools", () => {
       await handler({ taskId: "task-1", result: "All done" });
 
       expect(state.getVolleyCount("dev", "lead")).toBe(0);
+    });
+  });
+
+  // ── team_spawn_agent (lead-only) ──────────────────────────
+
+  describe("team_spawn_agent", () => {
+    it("calls the spawn callback with the provided options", async () => {
+      let spawnedWith: any = null;
+      const spawnFn = async (opts: any) => { spawnedWith = opts; };
+
+      const handler = getToolHandler("lead", "team_spawn_agent", {
+        isLead: true,
+        spawnAgent: spawnFn,
+      });
+
+      const result = await handler({
+        id: "backend",
+        role: "Backend engineer",
+        workingDirectory: "/src/api",
+        model: "gpt-5",
+      });
+
+      expect(result.spawned).toBe(true);
+      expect(result.id).toBe("backend");
+      expect(spawnedWith).toEqual({
+        id: "backend",
+        role: "Backend engineer",
+        workingDirectory: "/src/api",
+        model: "gpt-5",
+      });
+    });
+
+    it("returns error when spawn fails", async () => {
+      const spawnFn = async () => { throw new Error("Max agents reached"); };
+
+      const handler = getToolHandler("lead", "team_spawn_agent", {
+        isLead: true,
+        spawnAgent: spawnFn,
+      });
+
+      const result = await handler({ id: "x", role: "test" });
+      expect(result.error).toContain("Max agents reached");
+    });
+  });
+
+  // ── team_complete_mission (lead-only) ─────────────────────
+
+  describe("team_complete_mission", () => {
+    it("calls the completion callback with summary", async () => {
+      let completedSummary: string | null = null;
+      const completeFn = (summary: string) => { completedSummary = summary; };
+
+      const handler = getToolHandler("lead", "team_complete_mission", {
+        isLead: true,
+        completeMission: completeFn,
+      });
+
+      const result = await handler({ summary: "All tasks done, auth module refactored" });
+
+      expect(result.completed).toBe(true);
+      expect(completedSummary).toBe("All tasks done, auth module refactored");
     });
   });
 });

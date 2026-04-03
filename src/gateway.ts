@@ -16,7 +16,6 @@ export function createGateway(orchestrator: Orchestrator) {
   const wss = new WebSocketServer({ server, path: "/ws" });
   const clients = new Set<WebSocket>();
 
-  // Broadcast events to all WebSocket clients
   function broadcast(event: ServerEvent) {
     const data = JSON.stringify(event);
     for (const ws of clients) {
@@ -26,7 +25,6 @@ export function createGateway(orchestrator: Orchestrator) {
     }
   }
 
-  // Pipe orchestrator events to WebSocket clients
   orchestrator.on("event", (event: ServerEvent) => {
     broadcast(event);
   });
@@ -42,10 +40,13 @@ export function createGateway(orchestrator: Orchestrator) {
         const cmd: ClientCommand = JSON.parse(raw.toString());
         switch (cmd.type) {
           case "message":
-            await orchestrator.sendToChannel(cmd.channel, cmd.content);
+            await orchestrator.sendMessage(cmd.content);
             break;
           case "dm":
             await orchestrator.sendDM(cmd.to, cmd.content);
+            break;
+          case "mission.update":
+            orchestrator.setMission(cmd.text);
             break;
           case "task.create":
             orchestrator.createTask(cmd.id, cmd.title, cmd.description, cmd.dependsOn, cmd.assignee);
@@ -74,9 +75,10 @@ export function createGateway(orchestrator: Orchestrator) {
 
   app.get("/api/status", (_req, res) => {
     res.json({
+      state: orchestrator.getTeamState(),
+      mission: orchestrator.getMission(),
       agents: orchestrator.getAgents(),
       tasks: orchestrator.getTasks(),
-      channels: [{ id: "general", name: "#general" }],
     });
   });
 
@@ -94,7 +96,7 @@ export function createGateway(orchestrator: Orchestrator) {
 
   app.post("/api/agents", async (req, res) => {
     try {
-      const { id, role, model, systemPrompt } = req.body;
+      const { id, role, model, systemPrompt, workingDirectory } = req.body;
       if (!id || !role) {
         return res.status(400).json({ error: "id and role are required" });
       }
@@ -104,6 +106,7 @@ export function createGateway(orchestrator: Orchestrator) {
         model,
         isLead: orchestrator.getAgents().length === 0,
         systemPrompt,
+        workingDirectory,
       });
       res.status(201).json(agent);
     } catch (err: any) {
@@ -122,16 +125,16 @@ export function createGateway(orchestrator: Orchestrator) {
 
   // ── REST: Messages ──────────────────────────────────────────
 
-  app.get("/api/channels/:channel/messages", (req, res) => {
+  app.get("/api/messages", (req, res) => {
     const limit = parseInt(req.query.limit as string) || 50;
-    res.json(orchestrator.getMessages(`#${req.params.channel}`, limit));
+    res.json(orchestrator.getMessages(limit));
   });
 
-  app.post("/api/channels/:channel/messages", async (req, res) => {
+  app.post("/api/messages", async (req, res) => {
     try {
       const { content } = req.body;
       if (!content) return res.status(400).json({ error: "content is required" });
-      const msg = await orchestrator.sendToChannel(`#${req.params.channel}`, content);
+      const msg = await orchestrator.sendMessage(content);
       res.status(201).json(msg);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -167,13 +170,38 @@ export function createGateway(orchestrator: Orchestrator) {
     }
   });
 
+  // ── REST: Mission ───────────────────────────────────────────
+
+  app.get("/api/mission", (_req, res) => {
+    const mission = orchestrator.getMission();
+    if (!mission) return res.status(404).json({ error: "No mission set" });
+    res.json(mission);
+  });
+
+  app.put("/api/mission", (req, res) => {
+    try {
+      const { text } = req.body;
+      if (!text) return res.status(400).json({ error: "text is required" });
+      orchestrator.setMission(text);
+      res.json(orchestrator.getMission());
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── REST: Activity ──────────────────────────────────────────
+
+  app.get("/api/activity", (req, res) => {
+    const limit = parseInt(req.query.limit as string) || 50;
+    res.json(orchestrator.getActivity(limit));
+  });
+
   return { app, server, wss };
 }
 
 export async function startGateway(port: number = DEFAULT_PORT): Promise<void> {
   const orchestrator = new Orchestrator();
 
-  // Start the Copilot SDK client
   console.log("⏳ Starting orchestrator...");
   await orchestrator.start();
 
@@ -187,17 +215,19 @@ export async function startGateway(port: number = DEFAULT_PORT): Promise<void> {
     console.log("  GET    /api/health");
     console.log("  GET    /api/status");
     console.log("  GET    /api/agents");
-    console.log("  POST   /api/agents         { id, role, model? }");
+    console.log("  POST   /api/agents         { id, role, model?, workingDirectory? }");
     console.log("  DELETE /api/agents/:id");
-    console.log("  GET    /api/channels/:ch/messages");
-    console.log("  POST   /api/channels/:ch/messages  { content }");
+    console.log("  GET    /api/messages");
+    console.log("  POST   /api/messages       { content }");
     console.log("  POST   /api/dm/:agentId    { content }");
     console.log("  GET    /api/tasks");
     console.log("  POST   /api/tasks          { id, title, description?, dependsOn?, assignee? }");
+    console.log("  GET    /api/mission");
+    console.log("  PUT    /api/mission         { text }");
+    console.log("  GET    /api/activity");
     console.log("");
   });
 
-  // Graceful shutdown
   const shutdown = async () => {
     console.log("\n🛑 Shutting down...");
     await orchestrator.stop();

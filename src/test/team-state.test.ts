@@ -28,6 +28,23 @@ describe("TeamState", () => {
       expect(agent!.status).toBe("idle");
     });
 
+    it("registers agent with workingDirectory", () => {
+      const session = new MockCopilotSession();
+      state.registerAgent("dev", "engineer", "gpt-5", session as any, "/src/backend");
+
+      const agent = state.getAgent("dev");
+      expect(agent).toBeDefined();
+      expect(agent!.workingDirectory).toBe("/src/backend");
+    });
+
+    it("defaults workingDirectory to null", () => {
+      const session = new MockCopilotSession();
+      state.registerAgent("dev", "engineer", "gpt-5", session as any);
+
+      const agent = state.getAgent("dev");
+      expect(agent!.workingDirectory).toBeNull();
+    });
+
     it("returns undefined for unknown agent", () => {
       expect(state.getAgent("nonexistent")).toBeUndefined();
     });
@@ -41,6 +58,14 @@ describe("TeamState", () => {
       const roster = state.getRoster();
       expect(roster).toHaveLength(2);
       expect(roster.map((a) => a.id).sort()).toEqual(["dev", "lead"]);
+    });
+
+    it("roster includes workingDirectory", () => {
+      const session = new MockCopilotSession();
+      state.registerAgent("dev", "engineer", "gpt-5", session as any, "/src");
+
+      const roster = state.getRoster();
+      expect(roster[0].workingDirectory).toBe("/src");
     });
 
     it("deregisters an agent", () => {
@@ -68,21 +93,20 @@ describe("TeamState", () => {
       const agent = state.getAgent("dev");
       expect(agent!.status).toBe("working");
     });
+
+    it("setSession replaces an existing session", () => {
+      const s1 = new MockCopilotSession();
+      const s2 = new MockCopilotSession();
+      state.registerAgent("dev", "engineer", "gpt-5", s1 as any);
+      state.setSession("dev", s2 as any);
+
+      expect(state.getSession("dev")).toBe(s2);
+    });
   });
 
   // ── Messages ──────────────────────────────────────────────
 
   describe("messages", () => {
-    it("adds and retrieves channel messages", () => {
-      state.addMessage("lead", "hello team", "#general", null);
-      state.addMessage("dev", "hi lead", "#general", null);
-
-      const messages = state.getChannelMessages("#general");
-      expect(messages).toHaveLength(2);
-      const agents = messages.map((m) => m.from_agent).sort();
-      expect(agents).toEqual(["dev", "lead"]);
-    });
-
     it("adds DMs (to_agent set, channel null)", () => {
       const msg = state.addMessage("lead", "hey dev", null, "dev");
       expect(msg.to_agent).toBe("dev");
@@ -90,18 +114,48 @@ describe("TeamState", () => {
       expect(msg.from_agent).toBe("lead");
     });
 
-    it("respects limit on channel messages", () => {
-      for (let i = 0; i < 10; i++) {
-        state.addMessage("lead", `message ${i}`, "#general", null);
-      }
-      const messages = state.getChannelMessages("#general", 3);
-      expect(messages).toHaveLength(3);
+    it("returns auto-incremented message IDs", () => {
+      const m1 = state.addMessage("lead", "first", null, "dev");
+      const m2 = state.addMessage("lead", "second", null, "dev");
+      expect(m2.id).toBeGreaterThan(m1.id);
     });
 
-    it("returns auto-incremented message IDs", () => {
-      const m1 = state.addMessage("lead", "first", "#general", null);
-      const m2 = state.addMessage("lead", "second", "#general", null);
-      expect(m2.id).toBeGreaterThan(m1.id);
+    it("getDMs returns messages between two agents", () => {
+      state.addMessage("lead", "hey dev", null, "dev");
+      state.addMessage("dev", "hey lead", null, "lead");
+      state.addMessage("lead", "follow up", null, "dev");
+
+      const dms = state.getDMs("lead", "dev");
+      expect(dms).toHaveLength(3);
+    });
+
+    it("getDMs excludes unrelated messages", () => {
+      const s = new MockCopilotSession();
+      state.registerAgent("other", "other", "gpt-5", s as any);
+
+      state.addMessage("lead", "to dev", null, "dev");
+      state.addMessage("lead", "to other", null, "other");
+      state.addMessage("other", "to lead", null, "lead");
+
+      const dms = state.getDMs("lead", "dev");
+      expect(dms).toHaveLength(1);
+    });
+
+    it("getAllMessages returns all messages", () => {
+      state.addMessage("lead", "msg1", null, "dev");
+      state.addMessage("dev", "msg2", null, "lead");
+      state.addMessage("lead", "msg3", "#general", null);
+
+      const all = state.getAllMessages();
+      expect(all).toHaveLength(3);
+    });
+
+    it("getAllMessages respects limit", () => {
+      for (let i = 0; i < 10; i++) {
+        state.addMessage("lead", `msg ${i}`, null, "dev");
+      }
+      const msgs = state.getAllMessages(3);
+      expect(msgs).toHaveLength(3);
     });
   });
 
@@ -257,6 +311,110 @@ describe("TeamState", () => {
       const unblocked = state.getUnblockedTasks();
       expect(unblocked).toHaveLength(1);
       expect(unblocked[0].id).toBe("t1");
+    });
+  });
+
+  // ── Mission ───────────────────────────────────────────────
+
+  describe("mission", () => {
+    it("returns null when no mission set", () => {
+      expect(state.getMission()).toBeNull();
+    });
+
+    it("sets and retrieves the current mission", () => {
+      state.setMission("Build an auth system");
+      const mission = state.getMission();
+      expect(mission).toBeDefined();
+      expect(mission!.text).toBe("Build an auth system");
+    });
+
+    it("updates mission and preserves history", () => {
+      state.setMission("Build auth v1");
+      state.setMission("Build auth v2 with OAuth");
+
+      const current = state.getMission();
+      expect(current!.text).toBe("Build auth v2 with OAuth");
+
+      const history = state.getMissionHistory();
+      expect(history).toHaveLength(2);
+    });
+
+    it("mission history is ordered by updated_at", () => {
+      state.setMission("First");
+      state.setMission("Second");
+      state.setMission("Third");
+
+      const history = state.getMissionHistory();
+      expect(history).toHaveLength(3);
+      expect(history[0].text).toBe("First");
+      expect(history[2].text).toBe("Third");
+    });
+  });
+
+  // ── Activity Log ──────────────────────────────────────────
+
+  describe("activity", () => {
+    it("logs and retrieves activity", () => {
+      state.logActivity("test.event", "lead", { key: "value" });
+
+      const activity = state.getActivity();
+      expect(activity).toHaveLength(1);
+      expect(activity[0].type).toBe("test.event");
+      expect(activity[0].agent_id).toBe("lead");
+      expect(JSON.parse(activity[0].data)).toEqual({ key: "value" });
+    });
+
+    it("auto-logs on DM creation", () => {
+      state.addMessage("lead", "hello", null, "dev");
+
+      const activity = state.getActivity();
+      const dmActivity = activity.filter((a) => a.type === "dm.sent");
+      expect(dmActivity).toHaveLength(1);
+    });
+
+    it("auto-logs on task creation", () => {
+      state.createTask("t1", "Build API", "");
+
+      const activity = state.getActivity();
+      const taskActivity = activity.filter((a) => a.type === "task.created");
+      expect(taskActivity).toHaveLength(1);
+    });
+
+    it("auto-logs on task claim", () => {
+      state.createTask("t1", "Build API", "");
+      const session = new MockCopilotSession();
+      state.registerAgent("dev", "engineer", "gpt-5", session as any);
+      state.claimTask("t1", "dev");
+
+      const activity = state.getActivity();
+      const claimActivity = activity.filter((a) => a.type === "task.claimed");
+      expect(claimActivity).toHaveLength(1);
+    });
+
+    it("auto-logs on task completion", () => {
+      state.createTask("t1", "Build API", "");
+      const session = new MockCopilotSession();
+      state.registerAgent("dev", "engineer", "gpt-5", session as any);
+      state.claimTask("t1", "dev");
+      state.completeTask("t1", "dev", "Done");
+
+      const activity = state.getActivity();
+      const completedActivity = activity.filter((a) => a.type === "task.completed");
+      expect(completedActivity).toHaveLength(1);
+    });
+
+    it("respects limit", () => {
+      for (let i = 0; i < 10; i++) {
+        state.logActivity("test", null, { i });
+      }
+      const activity = state.getActivity(3);
+      expect(activity).toHaveLength(3);
+    });
+
+    it("allows null agent_id", () => {
+      state.logActivity("system.event", null, {});
+      const activity = state.getActivity();
+      expect(activity[0].agent_id).toBeNull();
     });
   });
 });
