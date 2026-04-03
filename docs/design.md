@@ -471,7 +471,7 @@ cpt tasks <team> --status in_progress  # Filter by status
 
 - **Thin client**: Zero logic — every command is a REST call or WebSocket connection to the daemon. No state, no config beyond daemon address.
 - **Agent-friendly**: Output is structured (JSON by default, human-readable with `--pretty`). An outer agent can parse `cpt team status api-rewrite` as easily as a human can read it.
-- **Auto-start**: If the daemon isn't running, `cpt team create` starts it automatically. No manual `daemon start` required.
+- **Explicit start required**: The daemon must be started with `cpt daemon start` before any team operations. If the daemon isn't running, commands like `cpt team create` fail with a clear message: `Error: Daemon is not running. Start it with: cpt daemon start`. No silent auto-start — the daemon is a long-lived background process with real resource implications, and that deserves an intentional action.
 - **Pipe-friendly**: `cpt tasks api-rewrite --status pending | jq '.[] | .id'` works.
 
 ### Output Modes
@@ -504,7 +504,7 @@ The daemon is a single Node.js process managing all teams. State file at `~/.cop
 { "pid": 12345, "port": 3742, "startedAt": "2026-04-03T..." }
 ```
 
-**Start**: Lazy start on first API call, or explicit `copilot-teams daemon start`. Spawns a detached process, writes PID file, boots gateway.
+**Start**: Explicit via `cpt daemon start`. Spawns a detached process, writes PID file, boots gateway. Commands fail with a helpful error if the daemon isn't running.
 
 **Stop**: `copilot-teams daemon stop` or `DELETE /api/daemon`. Gracefully disconnects all sessions (state preserved on disk), saves team configs, exits.
 
