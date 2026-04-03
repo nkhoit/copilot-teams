@@ -264,6 +264,104 @@ The prompt rules should handle most cases — the volley counter is a hard safet
 
 ---
 
+## Prompt Customization
+
+Each agent's system prompt is built from multiple layers. Some are handled automatically by the Copilot CLI, others are managed by copilot-teams.
+
+### Prompt Stack
+
+```
+Layer 1: CLI foundation (identity, safety, tool instructions)          ← Copilot CLI (automatic)
+Layer 2: ~/.copilot/instructions.md (user's global preferences)        ← Copilot CLI (automatic)
+Layer 3: .github/copilot-instructions.md (repo-specific instructions)  ← Copilot CLI (automatic)
+Layer 4: Built-in team prompt (team mechanics, tools, task system)     ← copilot-teams (automatic)
+Layer 5: lead.md / worker operating instructions (user-defined style)  ← copilot-teams (user-provided)
+```
+
+**Layers 1–3** are inherited for free. The Copilot CLI subprocess loads global and repo-level instructions for every session based on the agent's `workingDirectory`. This means agents will follow the same coding conventions, style preferences, and project-specific instructions that a normal Copilot session would.
+
+**Layer 4** is the built-in team prompt managed by copilot-teams. It teaches agents about the team tools (`team_dm`, `team_create_task`, etc.), their role (lead vs. worker), and communication rules (anti-ping-pong).
+
+**Layer 5** is the user's customization point — operating instructions that control *how* the lead (or workers) should behave.
+
+### Lead Prompt Customization
+
+The lead's operating style is customizable via a markdown file. This file is appended to the system prompt (it does not replace any existing layers).
+
+**Resolution order** (first match wins):
+
+```
+1. Explicit flag:    --lead-prompt-file ./my-lead.md
+2. Convention file:  <workingDirectory>/.copilot-teams/lead.md
+3. Global default:   ~/.copilot-teams/lead.md
+4. None:             Built-in default only
+```
+
+**Example lead.md:**
+
+```markdown
+## Planning Style
+- Break work into small, independently testable tasks
+- Never have more than 2 tasks in progress simultaneously
+- Always create a verification task as the final step
+
+## Worker Management
+- Prefer spawning specialists over generalists
+- Give each worker a focused scope — one module, one service
+- Check in with idle workers before spawning new ones
+
+## Communication
+- When reporting progress, include concrete metrics (files changed, tests passing)
+- Escalate to the user if blocked for more than 2 task cycles
+```
+
+**CLI usage:**
+
+```bash
+# Explicit file
+cpt team create api-rewrite \
+  --mission "Rewrite API to Hono" \
+  --dir /projects/app \
+  --lead-prompt-file ./lead-instructions.md
+
+# Convention-based (auto-detects /projects/app/.copilot-teams/lead.md)
+cpt team create api-rewrite \
+  --mission "Rewrite API to Hono" \
+  --dir /projects/app
+```
+
+**API:**
+
+```json
+POST /api/teams
+{
+  "name": "api-rewrite",
+  "mission": "Rewrite API to Hono",
+  "workingDirectory": "/projects/app",
+  "leadPrompt": "contents of the lead.md file as a string"
+}
+```
+
+The CLI reads the file and passes contents as a string. The API only deals with text.
+
+### Convention File Location
+
+The convention file at `<workingDirectory>/.copilot-teams/lead.md` mirrors the `.github/copilot-instructions.md` pattern — it lives with the project, gets version-controlled, and different repos can have different lead styles without any flags.
+
+The global default at `~/.copilot-teams/lead.md` is for personal preferences that should apply across all teams (e.g., "always be concise", "prefer TypeScript").
+
+### Mid-Mission Style Changes
+
+The lead's system prompt cannot be changed after session creation (SDK limitation). To adjust the lead's behavior during a mission, fold operating instructions into a **mission update**:
+
+```bash
+cpt mission set api-rewrite "Continue the API rewrite, but prioritize test coverage. Don't proceed to new endpoints until existing ones have full test coverage."
+```
+
+The lead re-reads the mission on every autonomy engine nudge, so updated instructions take effect naturally.
+
+---
+
 ## API Reference
 
 ### REST Endpoints
