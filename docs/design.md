@@ -327,6 +327,73 @@ type ClientCommand =
 
 ---
 
+## CLI (`cpt`)
+
+`cpt` (copilot-teams) is a thin CLI client that talks to the daemon's REST API. It's the primary interface for both humans and agents.
+
+### Commands
+
+```bash
+# Daemon management
+cpt daemon start              # Start the daemon (or auto-starts on first use)
+cpt daemon stop               # Gracefully shut down
+cpt daemon status             # Show PID, port, uptime, running teams
+
+# Team lifecycle
+cpt team create <name> --mission "..." --dir /path/to/project
+cpt team list                 # List all teams and their state
+cpt team status <name>        # Agents, tasks, mission, current state
+cpt team pause <name>         # Pause autonomy (sessions stay alive)
+cpt team resume <name>        # Resume autonomy
+cpt team delete <name>        # Shut down and clean up
+
+# Mission
+cpt mission get <team>        # Current mission + history
+cpt mission set <team> "..."  # Update the mission
+
+# Agents
+cpt agent list <team>         # List agents and their status
+cpt agent add <team> --id dev --role "engineer" [--dir /path] [--model gpt-5]
+cpt agent remove <team> <agentId>
+
+# Communication
+cpt send <team> "message"     # Send a message to the lead
+cpt dm <team> <agentId> "msg" # DM a specific agent
+
+# Observability
+cpt activity <team>           # Recent activity feed
+cpt activity <team> --follow  # Stream activity in real-time (WebSocket)
+cpt tasks <team>              # List tasks
+cpt tasks <team> --status in_progress  # Filter by status
+```
+
+### Design Principles
+
+- **Thin client**: Zero logic — every command is a REST call or WebSocket connection to the daemon. No state, no config beyond daemon address.
+- **Agent-friendly**: Output is structured (JSON by default, human-readable with `--pretty`). An outer agent can parse `cpt team status api-rewrite` as easily as a human can read it.
+- **Auto-start**: If the daemon isn't running, `cpt team create` starts it automatically. No manual `daemon start` required.
+- **Pipe-friendly**: `cpt tasks api-rewrite --status pending | jq '.[] | .id'` works.
+
+### Output Modes
+
+```bash
+cpt team status api-rewrite              # JSON (default, agent-friendly)
+cpt team status api-rewrite --pretty     # Formatted for humans
+cpt activity api-rewrite --follow        # Streaming (real-time via WebSocket)
+```
+
+### Implementation
+
+The CLI is a standalone binary/script that:
+1. Reads `~/.copilot-teams/daemon.json` for PID/port
+2. Makes HTTP requests to `http://localhost:<port>/api/...`
+3. For `--follow` commands, opens a WebSocket to `ws://localhost:<port>/ws?team=<id>`
+4. Prints response JSON (or formatted output with `--pretty`)
+
+Built with a lightweight arg parser (e.g., `commander` or `yargs`). Packaged as an npm bin so `npm install -g copilot-teams` gives you the `cpt` command.
+
+---
+
 ## Daemon Lifecycle
 
 ### Process Management
