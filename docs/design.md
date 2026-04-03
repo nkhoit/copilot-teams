@@ -352,7 +352,9 @@ The global default at `~/.copilot-teams/lead.md` is for personal preferences tha
 
 ### Mid-Mission Style Changes
 
-The lead's system prompt cannot be changed after session creation (SDK limitation). To adjust the lead's behavior during a mission, fold operating instructions into a **mission update**:
+There is no method to change an agent's system prompt while a session is running. However, the SDK does allow passing a new `systemMessage` when calling `resumeSession()` — so a disconnect→resume cycle could update the prompt while preserving full conversation history. This is not currently implemented as a feature (added complexity for an unclear use case), but the capability exists in the SDK if needed later.
+
+For now, the recommended approach is to fold operating instructions into a **mission update**:
 
 ```bash
 cpt mission set api-rewrite "Continue the API rewrite, but prioritize test coverage. Don't proceed to new endpoints until existing ones have full test coverage."
