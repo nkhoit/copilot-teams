@@ -119,7 +119,7 @@ Communication patterns:
 
 ### Activity Feed
 
-For observability, there is a **read-only activity feed** — a projection of everything that happened (tasks created, claimed, completed, DMs sent, mission changes). This replaces the old `#general` channel concept.
+For observability, there is a **read-only activity feed** — a projection of everything that happened (tasks created, claimed, completed, DMs sent, mission changes). It serves the same purpose as a shared channel without the noise of agents reacting to every broadcast.
 
 ### Tasks
 
@@ -164,13 +164,13 @@ Tools injected into every agent session via `defineTool()`:
 | `team_spawn_agent` | Spawn a new worker with a role and working directory | Lead |
 | `team_complete_mission` | Declare the current mission fulfilled | Lead |
 
-Note: `team_send` (channel broadcast) has been removed. The lead spawning workers is a tool rather than a REST-only operation — this lets the lead self-organize.
+There is no broadcast/channel tool — all communication is via DMs. The lead spawns workers via a tool rather than requiring a REST call — this lets the lead self-organize.
 
 ---
 
 ## Autonomy Engine
 
-The autonomy engine makes teams self-driving. It is **event-driven with a heartbeat safety net** (Option C from design discussions).
+The autonomy engine makes teams self-driving. It uses an **event-driven model with a heartbeat safety net**.
 
 ### Event-Driven Nudges
 
@@ -260,7 +260,7 @@ Without guardrails, agents will chat endlessly ("Got it!" "Thanks!" "No problem!
 2. **`expectsReply` flag**: The `team_dm` tool has a boolean parameter. When `false`, the message is tagged `[NO REPLY NEEDED]` and agents know not to respond.
 3. **Volley counter**: Tracks consecutive DMs between any pair of agents. After `MAX_VOLLEY` (default: 3) consecutive exchanges, further DMs are blocked until the agent does "real work" (completes a task, etc.).
 
-In practice, the prompt rules alone work well — the volley counter is a safety net.
+The prompt rules should handle most cases — the volley counter is a hard safety net for when they don't.
 
 ---
 
@@ -474,21 +474,22 @@ delete          → shutdown
 
 ### What's Been Tested
 
-- **M1**: Two agents (Alice, Bob) exchange messages via DMs ✅
-- **M2**: Three agents (lead, researcher, engineer) coordinate a security review with task dependencies. Lead decomposes work, researcher completes audit, tasks auto-unblock, engineer claims and starts fixes ✅
-- **M3**: Gateway boots, agents spawn/despawn via REST, user messages flow through, agents respond, tasks CRUD works, DMs work, WebSocket events pipe to clients ✅
+- **M1 — Agent communication**: Two agents (Alice, Bob) exchange messages via DMs and a shared channel. Validates that `defineTool()` handlers can inject messages into other sessions via `session.send()`. ✅
+- **M2 — Task coordination**: Three agents (lead, researcher, engineer) coordinate a security review with task dependencies. Lead decomposes work into dependent tasks, researcher completes an audit, tasks auto-unblock, engineer claims and starts implementing fixes. Validates the task lifecycle, dependency resolution, and anti-ping-pong system. ✅
+- **M3 — Gateway API**: Express server with REST endpoints and WebSocket event bus. Agents spawn/despawn via REST, user messages flow to agents, tasks CRUD works, real-time events stream to WebSocket clients. ✅
 
-### What Needs to Change
+### Remaining Work
 
-The current codebase is single-team with channels. To implement this design:
+The current codebase implements a single-team gateway with channel-based communication. To fully implement the design described in this document:
 
-1. **Remove channels** — drop `team_send`, remove `#general` routing, simplify to DMs only
-2. **Add multi-team** — Team Registry, per-team orchestrators, `/api/teams/:id/` routing
-3. **Add mission system** — mission field on teams, `team_complete_mission` tool, mission update API
-4. **Add autonomy engine** — event-driven nudges + heartbeat timer
-5. **Add `team_spawn_agent` tool** — lead can spawn workers with scoped working directories
-6. **Add daemon lifecycle** — PID file, lazy start, crash recovery via `resumeSession()`
-7. **Add activity feed** — read-only projection of all events for observability
+1. **DMs-only communication** — replace channel broadcast (`team_send` / `#general`) with DM-only communication
+2. **Multi-team support** — Team Registry, per-team orchestrators, `/api/teams/:id/` routing
+3. **Mission system** — mission field on teams, `team_complete_mission` tool, mission update API
+4. **Autonomy engine** — event-driven nudges + heartbeat timer
+5. **`team_spawn_agent` tool** — lead can spawn workers with scoped working directories
+6. **Daemon lifecycle** — PID file, lazy start, crash recovery via `resumeSession()`
+7. **Activity feed** — read-only projection of all events for observability
+8. **CLI (`cpt`)** — thin client over REST/WebSocket
 
 ---
 
