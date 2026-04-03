@@ -701,3 +701,44 @@ The lead could also pass `additionalInstructions` to extend a template for a spe
 - **Institutional knowledge**: Best practices get encoded once, not re-prompted every time
 - **Role discovery**: The lead could list available templates and make informed staffing decisions
 - **Shareability**: Role templates can be version-controlled and shared across a team/org
+
+---
+
+## Future: Lazy Session Resume
+
+> **Status**: Not yet implemented. Captured here for future exploration.
+
+Currently, daemon restart would resume all agent sessions eagerly. A more efficient approach is to only resume sessions that are actually needed — lazy-loading idle agents on demand.
+
+### How It Would Work
+
+Agent status is already tracked in SQLite (`idle` vs `working` with `current_task`), so on daemon restart:
+
+1. Read the agents table to determine who was `working` vs `idle`
+2. Always resume the **lead** (it drives the autonomy engine)
+3. Resume any agents with `status = 'working'` (they have in-flight tasks)
+4. Leave `idle` agents registered in the database but **don't** resume their SDK sessions
+5. When an idle agent is needed (DM, task assignment), call `resumeSession()` on demand
+
+### Implementation Sketch
+
+Team tools like `team_dm` and task assignment currently assume `state.getSession(id)` returns a live session. With lazy loading, they'd use a wrapper that resumes on first access:
+
+```typescript
+async function getOrResumeSession(agentId: string): Promise<CopilotSession> {
+  let session = state.getSession(agentId);
+  if (!session) {
+    session = await client.resumeSession(storedSessionIds[agentId], config);
+    state.setSession(agentId, session);
+  }
+  return session;
+}
+```
+
+The SDK's `resumeSession()` restores full conversation history, so the agent picks up where it left off. The only cost is a brief delay (~a few seconds) on first interaction after resume.
+
+### Why This Matters Later
+
+- **Resource efficiency**: Idle agents don't consume memory or hold open SDK sessions
+- **Faster daemon restart**: Only the lead and active workers need to boot immediately
+- **Scales with team size**: A team of 10 agents where 7 are idle only loads 3 sessions
