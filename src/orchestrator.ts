@@ -219,7 +219,7 @@ export class Orchestrator extends EventEmitter {
   async spawnAgent(opts: SpawnAgentOptions): Promise<Agent> {
     if (!this.client) throw new Error("Orchestrator not started");
 
-    const model = opts.model ?? "claude-sonnet-4";
+    const model = opts.model ?? "claude-opus-4.6";
     const isLead = opts.isLead ?? (this.state.getRoster().length === 0);
     const agentWorkDir = opts.workingDirectory ?? this.workingDirectory;
 
