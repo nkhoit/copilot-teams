@@ -2,8 +2,6 @@
 
 Autonomous AI agent teams for GitHub Copilot. Spawn a team of specialized agents — developers, QA engineers, code reviewers — that collaborate on real software projects. A lead agent decomposes your mission into tasks, spawns workers, and coordinates the pipeline while an autonomy engine keeps everything moving.
 
-In practice: you describe what you want built, the lead creates a plan, spawns the right agents, and the team builds it end-to-end — writing code, running tests, reviewing for security issues, and writing docs. A URL shortener with 33 passing tests and 100% statement coverage was built in ~7 minutes with zero human intervention beyond approving the plan.
-
 Built on the [GitHub Copilot SDK](https://github.com/github/copilot-sdk).
 
 ## Prerequisites
