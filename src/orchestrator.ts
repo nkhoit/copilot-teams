@@ -4,6 +4,7 @@ import { approveAll } from "@github/copilot-sdk";
 import { TeamState } from "./team-state.js";
 import type { TeamMessage } from "./team-state.js";
 import { createTeamTools } from "./team-tools.js";
+import { resolveTemplate } from "./role-templates.js";
 import type { Agent, Task, Message, Activity, Mission, TeamStatusState } from "./types.js";
 
 export type EventBus = EventEmitter;
@@ -23,11 +24,12 @@ You are the TEAM LEAD. You receive the mission and coordinate the team.
 
 Your responsibilities:
 - Decompose the mission into tasks using team_create_task
+- Check available role templates with team_list_templates before spawning workers
 - Spawn workers with appropriate roles and working directories using team_spawn_agent
 - Assign tasks to workers and monitor progress
 - Declare mission completion with team_complete_mission when the objective is fulfilled
 
-You have access to team tools: team_dm, team_get_roster, team_create_task, team_get_tasks, team_claim_task, team_complete_task, team_spawn_agent, team_complete_mission.
+You have access to team tools: team_dm, team_get_roster, team_create_task, team_get_tasks, team_claim_task, team_complete_task, team_list_templates, team_spawn_agent, team_complete_mission.
 Use these tools to coordinate. Do NOT just describe what you'd do — actually call the tools.`;
 
   const custom = customPrompt ? `\n\n## OPERATING INSTRUCTIONS\n${customPrompt}` : "";
@@ -56,6 +58,7 @@ export interface SpawnAgentOptions {
   isLead?: boolean;
   systemPrompt?: string;
   workingDirectory?: string;
+  template?: string;
 }
 
 export interface OrchestratorOptions {
@@ -166,12 +169,14 @@ export class Orchestrator extends EventEmitter {
         const tools = createTeamTools(this.state, agent.id, {
           eventBus: this,
           isLead,
+          workingDirectory: this.workingDirectory,
           spawnAgent: isLead ? async (spawnOpts) => {
             await this.spawnAgent({
               id: spawnOpts.id,
               role: spawnOpts.role,
               model: spawnOpts.model,
               workingDirectory: spawnOpts.workingDirectory,
+              template: spawnOpts.template,
             });
           } : undefined,
           completeMission: isLead ? (summary) => {
@@ -226,12 +231,14 @@ export class Orchestrator extends EventEmitter {
     const tools = createTeamTools(this.state, opts.id, {
       eventBus: this,
       isLead,
+      workingDirectory: this.workingDirectory,
       spawnAgent: isLead ? async (spawnOpts) => {
         await this.spawnAgent({
           id: spawnOpts.id,
           role: spawnOpts.role,
           model: spawnOpts.model,
           workingDirectory: spawnOpts.workingDirectory,
+          template: spawnOpts.template,
         });
       } : undefined,
       completeMission: isLead ? (summary) => {
@@ -239,8 +246,23 @@ export class Orchestrator extends EventEmitter {
       } : undefined,
     });
 
-    const systemPrompt = opts.systemPrompt ??
-      (isLead ? buildLeadPrompt(opts.id, opts.role, this.leadPrompt) : buildWorkerPrompt(opts.id, opts.role));
+    // Build system prompt: base prompt + optional template content
+    let systemPrompt: string;
+    if (opts.systemPrompt) {
+      systemPrompt = opts.systemPrompt;
+    } else if (isLead) {
+      systemPrompt = buildLeadPrompt(opts.id, opts.role, this.leadPrompt);
+    } else {
+      let templateContent = "";
+      if (opts.template) {
+        const resolved = resolveTemplate(opts.template, this.workingDirectory);
+        if (resolved) {
+          templateContent = `\n\n## ROLE TEMPLATE: ${resolved.name} (${resolved.source})\n${resolved.content}`;
+          console.log(`📄 [${this.teamId}] Applied template "${resolved.name}" (${resolved.source}) to ${opts.id}`);
+        }
+      }
+      systemPrompt = buildWorkerPrompt(opts.id, opts.role) + templateContent;
+    }
 
     const session = await this.client.createSession({
       model,

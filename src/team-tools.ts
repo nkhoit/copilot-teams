@@ -3,12 +3,13 @@ import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { TeamState } from "./team-state.js";
 import type { EventBus } from "./orchestrator.js";
+import { listTemplates, resolveTemplate } from "./role-templates.js";
 
 const MAX_VOLLEY = 3;
 
 /** Callback for the lead to spawn new agents */
 export interface SpawnAgentFn {
-  (opts: { id: string; role: string; workingDirectory?: string; model?: string }): Promise<void>;
+  (opts: { id: string; role: string; workingDirectory?: string; model?: string; template?: string }): Promise<void>;
 }
 
 /** Callback for mission completion */
@@ -28,6 +29,7 @@ export function createTeamTools(
     spawnAgent?: SpawnAgentFn;
     completeMission?: CompleteMissionFn;
     isLead?: boolean;
+    workingDirectory?: string;
   },
 ): Tool<any>[] {
   const emit = (event: any) => options?.eventBus?.emit("event", event);
@@ -195,23 +197,50 @@ export function createTeamTools(
 
   if (options?.isLead && options.spawnAgent) {
     const spawnAgent = options.spawnAgent;
+    const workDir = options.workingDirectory;
+
+    tools.push(
+      defineTool("team_list_templates", {
+        description:
+          "List available role templates. Templates define reusable agent archetypes with persistent operating instructions. " +
+          "Use a template name in team_spawn_agent's 'template' parameter to apply it.",
+        parameters: z.object({}),
+        skipPermission: true,
+        handler: async () => {
+          const templates = listTemplates(workDir);
+          if (templates.length === 0) {
+            return { templates: [], hint: "No templates found. You can spawn agents with freeform roles instead." };
+          }
+          return { templates: templates.map((t) => ({ name: t.name, source: t.source, description: t.description })) };
+        },
+      }),
+    );
 
     tools.push(
       defineTool("team_spawn_agent", {
         description:
-          "Spawn a new team member with a specific role and working directory. Only the lead can use this.",
+          "Spawn a new team member with a specific role and working directory. Only the lead can use this. " +
+          "Optionally specify a 'template' name to apply a role template (use team_list_templates to discover available templates).",
         parameters: z.object({
           id: z.string().describe("Unique agent ID (e.g., 'backend', 'tester')"),
           role: z.string().describe("Description of the agent's role"),
           workingDirectory: z.string().optional().describe("Directory this agent should work in"),
-          model: z.string().optional().describe("Model to use (default: claude-sonnet-4)"),
+          model: z.string().optional().describe("Model to use (default: claude-opus-4.6)"),
+          template: z.string().optional().describe("Name of a role template to apply (e.g., 'qa-tester')"),
         }),
         skipPermission: true,
-        handler: async ({ id, role, workingDirectory, model }) => {
+        handler: async ({ id, role, workingDirectory, model, template }) => {
           try {
-            await spawnAgent({ id, role, workingDirectory, model });
-            console.log(`\n👤 Lead spawned agent: ${id} (${role})`);
-            return { spawned: true, id, role, workingDirectory };
+            if (template) {
+              const resolved = resolveTemplate(template, workDir);
+              if (!resolved) {
+                const available = listTemplates(workDir).map((t) => t.name);
+                return { error: `Template "${template}" not found. Available: ${available.join(", ") || "none"}` };
+              }
+            }
+            await spawnAgent({ id, role, workingDirectory, model, template });
+            console.log(`\n👤 Lead spawned agent: ${id} (${role}${template ? `, template: ${template}` : ""})`);
+            return { spawned: true, id, role, workingDirectory, template: template ?? null };
           } catch (err: any) {
             return { error: err.message };
           }
