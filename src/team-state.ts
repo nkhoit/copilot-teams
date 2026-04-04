@@ -337,17 +337,17 @@ export class TeamState {
     return { completed: true, unblocked };
   }
 
-  rejectTask(taskId: string, feedback: string): { rejected: boolean } {
+  rejectTask(taskId: string, feedback: string): { rejected: boolean; assignee?: string } {
     const task = this.db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId) as Task | undefined;
     if (!task) return { rejected: false };
     if (task.status !== "done") return { rejected: false };
 
-    // Move task back to pending, clear assignee and result
+    // Move task back to pending, keep assignee so they can rework it
     this.db.prepare(
-      "UPDATE tasks SET status = 'pending', assignee = NULL, result = NULL WHERE id = ?",
+      "UPDATE tasks SET status = 'pending', result = NULL WHERE id = ?",
     ).run(taskId);
-    this.logActivity("task.rejected", null, { taskId, feedback: feedback.slice(0, 500) });
-    return { rejected: true };
+    this.logActivity("task.rejected", null, { taskId, assignee: task.assignee, feedback: feedback.slice(0, 500) });
+    return { rejected: true, assignee: task.assignee ?? undefined };
   }
 
   getTasks(status?: string): Task[] {

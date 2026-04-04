@@ -382,7 +382,7 @@ describe("Team Tools", () => {
 
       const task = state.getTasks().find((t) => t.id === "task-1");
       expect(task!.status).toBe("pending");
-      expect(task!.assignee).toBeNull();
+      expect(task!.assignee).toBe("dev");
       expect(task!.result).toBeNull();
     });
 

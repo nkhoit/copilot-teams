@@ -328,10 +328,18 @@ export function createTeamTools(
           console.log(`\n❌ Lead rejected task: ${taskId} — ${feedback}`);
           emit({ type: "task.rejected", taskId, agentId, feedback });
 
-          // Notify the original assignee if they have an active session
-          const task = state.getTasks().find((t) => t.id === taskId);
-          // Task is now unassigned, but we can check activity for who completed it
-          return { rejected: true, taskId, feedback };
+          // Notify the assignee that their task was rejected
+          if (result.assignee) {
+            const msg = `TASK REJECTED: Your task "${taskId}" was reviewed and sent back for rework.\n\nFeedback: ${feedback}\n\nPlease claim the task again, address the feedback, and resubmit.`;
+            state.addMessage(agentId, result.assignee, "dm", msg);
+            const session = state.getSession(result.assignee);
+            if (session) {
+              session.send({
+                prompt: msg,
+              });
+            }
+          }
+          return { rejected: true, taskId, assignee: result.assignee ?? null, feedback };
         },
       }),
     );
