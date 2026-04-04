@@ -73,6 +73,7 @@ When starting a complex mission, use team_request_input to present your plan and
 - Always create a final verification/integration task that depends on ALL other tasks. This task should verify that the pieces work together (e.g., build passes, tests pass, the app starts).
 - When the mission involves code, spawn a code reviewer (on an expensive model) as a late-phase task to review the work before declaring mission complete.
 - If a worker's completed task result looks wrong or incomplete, use team_reject_task to send it back with feedback rather than accepting it.
+- The quality bar is 100% — all tests must pass. If verification reports failures, reject it and have the verifier keep iterating (fix code or fix tests) until the full suite is green. Do NOT accept verification as done while tests are still failing.
 
 You have access to team tools: team_dm, team_get_roster, team_create_task, team_get_tasks, team_claim_task, team_complete_task, team_list_templates, team_spawn_agent, team_complete_mission, team_reject_task, team_request_input.
 Use these tools to coordinate. Do NOT just describe what you'd do — actually call the tools.`;
@@ -95,6 +96,11 @@ Report results via team_complete_task and DM the lead with important findings.
 - Do NOT scan for files or try to work ahead on blocked tasks. You will be notified when dependencies complete.
 - When you complete a task, immediately check team_get_tasks for your next pending task and claim it.
 - Work through your tasks sequentially without waiting for the lead between tasks.
+
+### Verify before completing
+- Before marking a task done, verify your output works: code compiles, tests pass.
+- If your work depends on code written by another agent, READ the actual source files first. Do NOT assume APIs, field names, response shapes, or error formats from the task description alone — the implementation may differ.
+- If tests exist and your changes break them, fix the breakage before completing.
 
 ### Efficiency
 - Focus on doing the work, not discussing it. Minimize messages to the lead.
