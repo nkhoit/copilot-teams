@@ -195,7 +195,9 @@ export function createTeamTools(
               createdAt: unblocked.created_at,
             },
           });
-          if (unblocked.assignee) {
+          // Only notify the assignee if they're not the one who just completed the task
+          // (they already know about the unblock since they caused it)
+          if (unblocked.assignee && unblocked.assignee !== agentId) {
             const session = state.getSession(unblocked.assignee);
             if (session) {
               await session.send({
