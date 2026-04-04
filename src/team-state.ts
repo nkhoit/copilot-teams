@@ -264,6 +264,14 @@ export class TeamState {
     dependsOn: string[] = [],
     assignee?: string,
   ): Task {
+    // Validate that all dependency task IDs actually exist
+    for (const depId of dependsOn) {
+      const exists = this.db.prepare("SELECT 1 FROM tasks WHERE id = ?").get(depId);
+      if (!exists) {
+        throw new Error(`Dependency task "${depId}" does not exist`);
+      }
+    }
+
     const status = dependsOn.length > 0 ? "blocked" : "pending";
     this.db.prepare(
       "INSERT INTO tasks (id, title, description, status, assignee, depends_on) VALUES (?, ?, ?, ?, ?, ?)",
@@ -308,33 +316,38 @@ export class TeamState {
     completed: boolean;
     unblocked: Task[];
   } {
-    this.db.prepare(
-      "UPDATE tasks SET status = 'done', result = ? WHERE id = ? AND assignee = ?",
-    ).run(result, taskId, agentId);
-    this.setAgentStatus(agentId, "idle", null);
-    this.logActivity("task.completed", agentId, { taskId, result: result.slice(0, 500) });
+    const txn = this.db.transaction(() => {
+      this.db.prepare(
+        "UPDATE tasks SET status = 'done', result = ? WHERE id = ? AND assignee = ?",
+      ).run(result, taskId, agentId);
+      this.setAgentStatus(agentId, "idle", null);
+      this.logActivity("task.completed", agentId, { taskId, result: result.slice(0, 500) });
 
-    const unblocked: Task[] = [];
-    const blockedTasks = this.db.prepare(
-      "SELECT * FROM tasks WHERE status = 'blocked'",
-    ).all() as Task[];
+      const unblocked: Task[] = [];
+      const blockedTasks = this.db.prepare(
+        "SELECT * FROM tasks WHERE status = 'blocked'",
+      ).all() as Task[];
 
-    for (const task of blockedTasks) {
-      const deps: string[] = JSON.parse(task.depends_on);
-      const allDone = deps.every((depId) => {
-        const dep = this.db.prepare("SELECT status FROM tasks WHERE id = ?").get(depId) as { status: string } | undefined;
-        return dep?.status === "done";
-      });
+      for (const task of blockedTasks) {
+        let deps: string[] = [];
+        try { deps = JSON.parse(task.depends_on); } catch { continue; }
+        const allDone = deps.every((depId) => {
+          const dep = this.db.prepare("SELECT status FROM tasks WHERE id = ?").get(depId) as { status: string } | undefined;
+          return dep?.status === "done";
+        });
 
-      if (allDone) {
-        this.db.prepare("UPDATE tasks SET status = 'pending' WHERE id = ?").run(task.id);
-        const updated = this.db.prepare("SELECT * FROM tasks WHERE id = ?").get(task.id) as Task;
-        unblocked.push(updated);
-        this.logActivity("task.unblocked", null, { taskId: task.id });
+        if (allDone) {
+          this.db.prepare("UPDATE tasks SET status = 'pending' WHERE id = ?").run(task.id);
+          const updated = this.db.prepare("SELECT * FROM tasks WHERE id = ?").get(task.id) as Task;
+          unblocked.push(updated);
+          this.logActivity("task.unblocked", null, { taskId: task.id });
+        }
       }
-    }
 
-    return { completed: true, unblocked };
+      return { completed: true, unblocked };
+    });
+
+    return txn();
   }
 
   rejectTask(taskId: string, feedback: string): { rejected: boolean; assignee?: string } {

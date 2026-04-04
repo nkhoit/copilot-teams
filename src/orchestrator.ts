@@ -396,8 +396,10 @@ export class Orchestrator extends EventEmitter {
     if (roster.length === 1 && roster[0].id === opts.id) {
       const mission = this.state.getMission();
       if (mission) {
-        session.send({
+        await session.send({
           prompt: `[MISSION]: ${mission.text}\n\nDecompose this into tasks and delegate to your team. Use team_spawn_agent to create workers if needed.`,
+        }).catch((err: unknown) => {
+          console.error(`⚠️ [${this.teamId}] Failed to deliver mission to lead:`, err);
         });
       }
     }
@@ -478,6 +480,8 @@ export class Orchestrator extends EventEmitter {
       if (leadSession) {
         leadSession.send({
           prompt: `[MISSION UPDATED]: ${text}\n\nDecompose this into tasks and delegate to your team. Use team_spawn_agent to create workers if needed.`,
+        }).catch((err: unknown) => {
+          console.error(`⚠️ [${this.teamId}] Failed to deliver mission update to lead:`, err);
         });
       }
     }
@@ -507,6 +511,8 @@ export class Orchestrator extends EventEmitter {
         // Send the lead a final wrap-up, then disconnect
         session.send({
           prompt: `[MISSION COMPLETE]: ${summary}\n\nAll work is done. Do not send any more messages or call any tools. Session ending.`,
+        }).catch((err: unknown) => {
+          console.error(`⚠️ [${this.teamId}] Failed to send completion to lead:`, err);
         }).finally(() => session.disconnect());
       } else {
         session.disconnect();
@@ -559,16 +565,20 @@ export class Orchestrator extends EventEmitter {
   }
 
   getTasks(status?: string): Task[] {
-    return this.state.getTasks(status).map((t) => ({
-      id: t.id,
-      title: t.title,
-      description: t.description,
-      status: t.status,
-      assignee: t.assignee,
-      dependsOn: JSON.parse(t.depends_on),
-      result: t.result,
-      createdAt: t.created_at,
-    }));
+    return this.state.getTasks(status).map((t) => {
+      let dependsOn: string[] = [];
+      try { dependsOn = JSON.parse(t.depends_on); } catch { /* corrupted dep data */ }
+      return {
+        id: t.id,
+        title: t.title,
+        description: t.description,
+        status: t.status,
+        assignee: t.assignee,
+        dependsOn,
+        result: t.result,
+        createdAt: t.created_at,
+      };
+    });
   }
 
   getMessages(limit: number = 50): Message[] {
@@ -576,13 +586,17 @@ export class Orchestrator extends EventEmitter {
   }
 
   getActivity(limit: number = 50): Activity[] {
-    return this.state.getActivity(limit).map((a) => ({
-      id: a.id,
-      type: a.type,
-      agentId: a.agent_id,
-      data: JSON.parse(a.data),
-      timestamp: a.timestamp,
-    }));
+    return this.state.getActivity(limit).map((a) => {
+      let data: Record<string, unknown> = {};
+      try { data = JSON.parse(a.data); } catch { /* corrupted activity data */ }
+      return {
+        id: a.id,
+        type: a.type,
+        agentId: a.agent_id,
+        data,
+        timestamp: a.timestamp,
+      };
+    });
   }
 
   getToolCalls(agentId?: string, limit: number = 100) {
@@ -591,13 +605,15 @@ export class Orchestrator extends EventEmitter {
 
   createTask(id: string, title: string, description: string = "", dependsOn: string[] = [], assignee?: string): Task {
     const t = this.state.createTask(id, title, description, dependsOn, assignee);
+    let parsedDeps: string[] = [];
+    try { parsedDeps = JSON.parse(t.depends_on); } catch { /* safe fallback */ }
     const task: Task = {
       id: t.id,
       title: t.title,
       description: t.description,
       status: t.status,
       assignee: t.assignee,
-      dependsOn: JSON.parse(t.depends_on),
+      dependsOn: parsedDeps,
       result: t.result,
       createdAt: t.created_at,
     };

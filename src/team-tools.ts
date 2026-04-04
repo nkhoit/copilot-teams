@@ -331,11 +331,11 @@ export function createTeamTools(
           // Notify the assignee that their task was rejected
           if (result.assignee) {
             const msg = `TASK REJECTED: Your task "${taskId}" was reviewed and sent back for rework.\n\nFeedback: ${feedback}\n\nPlease claim the task again, address the feedback, and resubmit.`;
-            state.addMessage(agentId, result.assignee, "dm", msg);
+            state.addMessage(agentId, msg, "dm", result.assignee);
             const session = state.getSession(result.assignee);
             if (session) {
-              session.send({
-                prompt: msg,
+              await session.send({ prompt: msg }).catch((err: unknown) => {
+                console.error(`⚠️ Failed to notify ${result.assignee} of rejection:`, err);
               });
             }
           }
