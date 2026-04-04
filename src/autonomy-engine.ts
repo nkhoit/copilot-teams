@@ -50,20 +50,23 @@ export class AutonomyEngine {
 
     switch (event.type) {
       case "task.completed":
-        this.onTaskCompleted(event.taskId, event.agentId, event.result);
+        this.onTaskCompleted(event.taskId, event.agentId, event.result)
+          .catch((err) => console.error(`⚠️ [${this.orchestrator.teamId}] Autonomy nudge failed:`, err));
         break;
       case "task.unblocked":
-        // Check if all tasks are now done
-        this.checkAllTasksDone();
+        this.checkAllTasksDone()
+          .catch((err) => console.error(`⚠️ [${this.orchestrator.teamId}] Autonomy nudge failed:`, err));
         break;
       case "agent.status":
         if (event.status === "idle") {
-          this.checkDeadlock();
+          this.checkDeadlock()
+            .catch((err) => console.error(`⚠️ [${this.orchestrator.teamId}] Autonomy nudge failed:`, err));
         }
         break;
       case "team.state_changed":
         if (event.state === "active") {
-          this.onTeamResumed();
+          this.onTeamResumed()
+            .catch((err) => console.error(`⚠️ [${this.orchestrator.teamId}] Autonomy nudge failed:`, err));
         } else if (event.state === "paused") {
           this.clearHeartbeat();
         }
@@ -140,7 +143,11 @@ export class AutonomyEngine {
     if (!this.running) return;
 
     const interval = this.isWorkActive() ? HEARTBEAT_ACTIVE_MS : HEARTBEAT_IDLE_MS;
-    this.heartbeatTimer = setTimeout(() => this.heartbeat(), interval);
+    this.heartbeatTimer = setTimeout(() => {
+      this.heartbeat().catch((err) =>
+        console.error(`⚠️ [${this.orchestrator.teamId}] Heartbeat failed:`, err),
+      );
+    }, interval);
   }
 
   private clearHeartbeat(): void {
@@ -205,6 +212,8 @@ export class AutonomyEngine {
     console.log(`🧠 [${this.orchestrator.teamId}] Nudge → ${leadId}: ${message.slice(0, 100)}...`);
     await leadSession.send({
       prompt: `[AUTONOMY ENGINE]: ${message}`,
+    }).catch((err: unknown) => {
+      console.error(`⚠️ [${this.orchestrator.teamId}] Failed to nudge lead:`, err);
     });
   }
 }

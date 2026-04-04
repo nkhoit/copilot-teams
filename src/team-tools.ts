@@ -175,6 +175,9 @@ export function createTeamTools(
           }
         }
         const outcome = state.completeTask(taskId, agentId, result);
+        if (!outcome.completed) {
+          return { success: false, reason: outcome.reason ?? "Failed to complete task" };
+        }
         state.resetVolley(agentId);
         console.log(`\n✅ ${agentId} completed task: ${taskId}`);
         emit({ type: "task.completed", taskId, agentId, result });
@@ -191,7 +194,7 @@ export function createTeamTools(
             type: "task.unblocked",
             task: {
               ...unblocked,
-              dependsOn: JSON.parse(unblocked.depends_on),
+              dependsOn: (() => { try { return JSON.parse(unblocked.depends_on); } catch { return []; } })(),
               createdAt: unblocked.created_at,
             },
           });
@@ -331,7 +334,7 @@ export function createTeamTools(
           // Notify the assignee that their task was rejected
           if (result.assignee) {
             const msg = `TASK REJECTED: Your task "${taskId}" was reviewed and sent back for rework.\n\nFeedback: ${feedback}\n\nPlease claim the task again, address the feedback, and resubmit.`;
-            state.addMessage(agentId, msg, "dm", result.assignee);
+            state.addMessage(agentId, msg, null, result.assignee);
             const session = state.getSession(result.assignee);
             if (session) {
               await session.send({ prompt: msg }).catch((err: unknown) => {

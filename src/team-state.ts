@@ -123,6 +123,12 @@ export class TeamState {
     session: CopilotSession,
     workingDirectory?: string,
   ): void {
+    // Disconnect any existing session for this agent ID to prevent leaks
+    const existingSession = this.sessions.get(id);
+    if (existingSession) {
+      existingSession.disconnect().catch(() => {});
+    }
+
     const sessionId = (session as any).sessionId ?? null;
     this.db.prepare(
       "INSERT OR REPLACE INTO agents (id, role, model, status, working_directory, session_id) VALUES (?, ?, ?, 'idle', ?, ?)",
@@ -151,7 +157,7 @@ export class TeamState {
   }
 
   getRoster(): AgentInfo[] {
-    const rows = this.db.prepare("SELECT * FROM agents").all() as any[];
+    const rows = this.db.prepare("SELECT * FROM agents ORDER BY created_at ASC").all() as any[];
     return rows.map((row) => ({
       id: row.id,
       role: row.role,
@@ -249,7 +255,8 @@ export class TeamState {
 
   resetVolley(agentId: string): void {
     for (const [key] of this.volleyCounts) {
-      if (key.includes(agentId)) {
+      const parts = key.split(":");
+      if (parts[0] === agentId || parts[1] === agentId) {
         this.volleyCounts.set(key, 0);
       }
     }
@@ -315,11 +322,20 @@ export class TeamState {
   completeTask(taskId: string, agentId: string, result: string): {
     completed: boolean;
     unblocked: Task[];
+    reason?: string;
   } {
     const txn = this.db.transaction(() => {
-      this.db.prepare(
-        "UPDATE tasks SET status = 'done', result = ? WHERE id = ? AND assignee = ?",
+      const updateResult = this.db.prepare(
+        "UPDATE tasks SET status = 'done', result = ? WHERE id = ? AND assignee = ? AND status = 'in_progress'",
       ).run(result, taskId, agentId);
+
+      if (updateResult.changes === 0) {
+        const task = this.db.prepare("SELECT status, assignee FROM tasks WHERE id = ?").get(taskId) as { status: string; assignee: string | null } | undefined;
+        if (!task) return { completed: false, unblocked: [], reason: "Task not found" };
+        if (task.assignee !== agentId) return { completed: false, unblocked: [], reason: `Task assigned to ${task.assignee}` };
+        return { completed: false, unblocked: [], reason: `Task status is '${task.status}', expected 'in_progress'` };
+      }
+
       this.setAgentStatus(agentId, "idle", null);
       this.logActivity("task.completed", agentId, { taskId, result: result.slice(0, 500) });
 
