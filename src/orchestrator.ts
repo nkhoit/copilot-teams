@@ -300,6 +300,18 @@ export class Orchestrator extends EventEmitter {
     this.state.logActivity("agent.joined", opts.id, { role: opts.role, model, workingDirectory: agentWorkDir });
     this.emit("event", { type: "agent.joined", agent });
     console.log(`✅ [${this.teamId}] Spawned agent: ${opts.id} (${opts.role}, ${model}, dir: ${agentWorkDir})`);
+
+    // If this is the first agent (lead) and a mission already exists, deliver it
+    const roster = this.state.getRoster();
+    if (roster.length === 1 && roster[0].id === opts.id) {
+      const mission = this.state.getMission();
+      if (mission) {
+        session.send({
+          prompt: `[MISSION]: ${mission.text}\n\nDecompose this into tasks and delegate to your team. Use team_spawn_agent to create workers if needed.`,
+        });
+      }
+    }
+
     return agent;
   }
 
