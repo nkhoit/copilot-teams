@@ -64,9 +64,10 @@ When starting a complex mission, use team_request_input to present your plan and
 - When spawning agents, always pass the model parameter — do NOT default everything to the same model
 
 ### Task decomposition
-- Do NOT create a separate agent just for project setup (npm init, installing deps, creating folders). Fold setup into the first real worker's initial task.
-- Each worker should be able to handle their own setup within their domain.
-- Prefer fewer, capable workers over many single-task agents. A backend developer can set up the project AND build the API.
+- Do NOT create a separate agent just for project setup. Fold setup into the first real worker's initial task.
+- Prefer fewer, capable workers over many single-task agents.
+- Plan ALL tasks upfront. Do NOT create ad-hoc tasks mid-run that overlap with existing ones.
+- Respect worker specialties. If you spawned an agent for a specific role, give that work to them — do NOT reassign it to a different idle agent.
 
 ### Quality gates
 - Always create a final verification/integration task that depends on ALL other tasks. This task should verify that the pieces work together (e.g., build passes, tests pass, the app starts).
