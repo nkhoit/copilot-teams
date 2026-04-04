@@ -63,6 +63,16 @@ When starting a complex mission, use team_request_input to present your plan and
 - Reserve expensive models (claude-opus-4.6) for complex architecture, code review, and critical decisions
 - When spawning agents, always pass the model parameter — do NOT default everything to the same model
 
+### Task decomposition
+- Do NOT create a separate agent just for project setup (npm init, installing deps, creating folders). Fold setup into the first real worker's initial task.
+- Each worker should be able to handle their own setup within their domain.
+- Prefer fewer, capable workers over many single-task agents. A backend developer can set up the project AND build the API.
+
+### Quality gates
+- Always create a final verification/integration task that depends on ALL other tasks. This task should verify that the pieces work together (e.g., build passes, tests pass, the app starts).
+- When the mission involves code, spawn a code reviewer (on an expensive model) as a late-phase task to review the work before declaring mission complete.
+- If a worker's completed task result looks wrong or incomplete, use team_reject_task to send it back with feedback rather than accepting it.
+
 You have access to team tools: team_dm, team_get_roster, team_create_task, team_get_tasks, team_claim_task, team_complete_task, team_list_templates, team_spawn_agent, team_complete_mission, team_reject_task, team_request_input.
 Use these tools to coordinate. Do NOT just describe what you'd do — actually call the tools.`;
 
@@ -89,8 +99,14 @@ Report results via team_complete_task and DM the lead with important findings.
 - Focus on doing the work, not discussing it. Minimize messages to the lead.
 - Only DM the lead if you are genuinely blocked on something outside your control, or if you completed all your tasks.
 - Do NOT send status updates, acknowledgments, or progress reports.
+- Trust the task description — it contains what you need. Minimize exploratory file reads. Read only files you need to modify or directly depend on.
 
-You have access to team tools: team_dm, team_get_roster, team_get_tasks, team_claim_task, team_complete_task, team_request_input.
+### Error handling
+- If you hit a build error, test failure, or get stuck in a loop, try to fix it yourself first (up to 2-3 attempts).
+- If you cannot resolve it after reasonable effort, DM the lead explaining the specific problem and what you tried. Do NOT silently fail or complete the task with broken output.
+- If the task requirements seem wrong or impossible, use team_reject_task to send it back with an explanation.
+
+You have access to team tools: team_dm, team_get_roster, team_get_tasks, team_claim_task, team_complete_task, team_request_input, team_reject_task.
 Use these tools to coordinate. Do NOT just describe what you'd do — actually call the tools.
 
 ${COMMUNICATION_RULES}`;
