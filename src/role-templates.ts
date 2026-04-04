@@ -8,6 +8,7 @@ export interface TemplateInfo {
   name: string;
   source: "project" | "global";
   description: string;
+  model?: string;
   path: string;
 }
 
@@ -15,6 +16,8 @@ export interface ResolvedTemplate {
   name: string;
   source: "project" | "global";
   content: string;
+  model?: string;
+  promptMode?: "replace" | "extend";
 }
 
 /**
@@ -41,6 +44,37 @@ export function listTemplates(workingDirectory?: string): TemplateInfo[] {
 }
 
 /**
+ * Parse simple YAML-like frontmatter from template content.
+ * Frontmatter is delimited by `---` lines at the start of the file.
+ * Supported fields: model, prompt (replace|extend)
+ */
+function parseFrontmatter(raw: string): { frontmatter: Record<string, string>; body: string } {
+  const lines = raw.split("\n");
+  if (lines[0]?.trim() !== "---") return { frontmatter: {}, body: raw };
+
+  const fmLines: string[] = [];
+  let endIdx = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i]?.trim() === "---") {
+      endIdx = i;
+      break;
+    }
+    fmLines.push(lines[i]!);
+  }
+
+  if (endIdx === -1) return { frontmatter: {}, body: raw };
+
+  const frontmatter: Record<string, string> = {};
+  for (const line of fmLines) {
+    const match = line.match(/^(\w+)\s*:\s*(.+)$/);
+    if (match) frontmatter[match[1]!] = match[2]!.trim();
+  }
+
+  const body = lines.slice(endIdx + 1).join("\n").replace(/^\n+/, "");
+  return { frontmatter, body };
+}
+
+/**
  * Resolve a template by name.
  * Project-specific takes priority over global. Returns null if not found.
  */
@@ -49,10 +83,14 @@ export function resolveTemplate(name: string, workingDirectory?: string): Resolv
   if (workingDirectory) {
     const projectPath = join(workingDirectory, ".copilot-teams", "roles", `${name}.md`);
     if (existsSync(projectPath)) {
+      const raw = readFileSync(projectPath, "utf-8");
+      const { frontmatter, body } = parseFrontmatter(raw);
       return {
         name,
         source: "project",
-        content: readFileSync(projectPath, "utf-8"),
+        content: body,
+        model: frontmatter["model"],
+        promptMode: (frontmatter["prompt"] as "replace" | "extend") ?? undefined,
       };
     }
   }
@@ -60,10 +98,14 @@ export function resolveTemplate(name: string, workingDirectory?: string): Resolv
   // Global fallback
   const globalPath = join(GLOBAL_ROLES_DIR, `${name}.md`);
   if (existsSync(globalPath)) {
+    const raw = readFileSync(globalPath, "utf-8");
+    const { frontmatter, body } = parseFrontmatter(raw);
     return {
       name,
       source: "global",
-      content: readFileSync(globalPath, "utf-8"),
+      content: body,
+      model: frontmatter["model"],
+      promptMode: (frontmatter["prompt"] as "replace" | "extend") ?? undefined,
     };
   }
 
@@ -79,12 +121,12 @@ function scanDir(dir: string, source: "project" | "global"): TemplateInfo[] {
 
     const name = entry.name.replace(/\.md$/, "");
     const fullPath = join(dir, entry.name);
-    const content = readFileSync(fullPath, "utf-8");
+    const raw = readFileSync(fullPath, "utf-8");
+    const { frontmatter, body } = parseFrontmatter(raw);
 
-    // Use the first non-empty, non-heading line as description
-    const description = extractDescription(content);
+    const description = extractDescription(body);
 
-    results.push({ name, source, description, path: fullPath });
+    results.push({ name, source, description, model: frontmatter["model"], path: fullPath });
   }
   return results;
 }

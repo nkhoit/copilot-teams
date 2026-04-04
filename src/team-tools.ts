@@ -253,7 +253,7 @@ export function createTeamTools(
           if (templates.length === 0) {
             return { templates: [], hint: "No templates found. You can spawn agents with freeform roles instead." };
           }
-          return { templates: templates.map((t) => ({ name: t.name, source: t.source, description: t.description })) };
+          return { templates: templates.map((t) => ({ name: t.name, source: t.source, description: t.description, model: t.model ?? null })) };
         },
       }),
     );
@@ -267,7 +267,7 @@ export function createTeamTools(
           id: z.string().describe("Unique agent ID (e.g., 'backend', 'tester')"),
           role: z.string().describe("Description of the agent's role"),
           workingDirectory: z.string().optional().describe("Directory this agent should work in"),
-          model: z.string().optional().describe("Model to use (default: claude-opus-4.6)"),
+          model: z.string().optional().describe("Model to use. If omitted, uses the template's model (if any), otherwise defaults to claude-opus-4.6"),
           template: z.string().optional().describe("Name of a role template to apply (e.g., 'qa-tester')"),
         }),
         skipPermission: true,

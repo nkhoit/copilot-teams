@@ -18,7 +18,13 @@ const COMMUNICATION_RULES = `
 5. Focus on completing your assigned tasks. Coordinate only when blocked or done.
 `.trim();
 
-function buildLeadPrompt(agentId: string, role: string, customPrompt?: string): string {
+function buildLeadPrompt(agentId: string, role: string, customPrompt?: string, templateContent?: string, promptMode?: "replace" | "extend"): string {
+  // If template says "replace", use template content as the entire prompt
+  if (promptMode === "replace" && templateContent) {
+    const custom = customPrompt ? `\n\n## OPERATING INSTRUCTIONS\n${customPrompt}` : "";
+    return `${templateContent}${custom}\n\n${COMMUNICATION_RULES}`;
+  }
+
   const base = `You are "${agentId}" — ${role}.
 You are the TEAM LEAD. You receive the mission and coordinate the team.
 
@@ -55,7 +61,8 @@ You have access to team tools: team_dm, team_get_roster, team_create_task, team_
 Use these tools to coordinate. Do NOT just describe what you'd do — actually call the tools.`;
 
   const custom = customPrompt ? `\n\n## OPERATING INSTRUCTIONS\n${customPrompt}` : "";
-  return `${base}${custom}\n\n${COMMUNICATION_RULES}`;
+  const template = templateContent ? `\n\n## LEAD TEMPLATE\n${templateContent}` : "";
+  return `${base}${custom}${template}\n\n${COMMUNICATION_RULES}`;
 }
 
 function buildWorkerPrompt(agentId: string, role: string): string {
@@ -220,14 +227,19 @@ export class Orchestrator extends EventEmitter {
           } : undefined,
         });
 
-        const systemPrompt = isLead
-          ? buildLeadPrompt(agent.id, agent.role, this.leadPrompt)
-          : buildWorkerPrompt(agent.id, agent.role);
+        // Resolve lead template for restore path too
+        let restorePrompt: string;
+        if (isLead) {
+          const leadTemplate = resolveTemplate("lead", this.workingDirectory);
+          restorePrompt = buildLeadPrompt(agent.id, agent.role, this.leadPrompt, leadTemplate?.content, leadTemplate?.promptMode);
+        } else {
+          restorePrompt = buildWorkerPrompt(agent.id, agent.role);
+        }
 
         const session = await client.resumeSession(agent.sessionId, {
           model: agent.model,
           tools,
-          systemMessage: { mode: "append", content: systemPrompt },
+          systemMessage: { mode: "append", content: restorePrompt },
           workingDirectory: agent.workingDirectory ?? this.workingDirectory,
           onPermissionRequest: approveAll,
         });
@@ -261,9 +273,26 @@ export class Orchestrator extends EventEmitter {
   async spawnAgent(opts: SpawnAgentOptions): Promise<Agent> {
     if (!this.client) throw new Error("Orchestrator not started");
 
-    const model = opts.model ?? "claude-opus-4.6";
     const isLead = opts.isLead ?? (this.state.getRoster().length === 0);
     const agentWorkDir = opts.workingDirectory ?? this.workingDirectory;
+
+    // Resolve template early so we can extract model and prompt
+    let resolved: import("./role-templates.js").ResolvedTemplate | null = null;
+    if (opts.template) {
+      resolved = resolveTemplate(opts.template, this.workingDirectory);
+      if (resolved) {
+        console.log(`📄 [${this.teamId}] Applied template "${resolved.name}" (${resolved.source}) to ${opts.id}`);
+      }
+    } else if (isLead) {
+      // Auto-discover lead.md template
+      resolved = resolveTemplate("lead", this.workingDirectory);
+      if (resolved) {
+        console.log(`📄 [${this.teamId}] Applied lead template (${resolved.source}) to ${opts.id}`);
+      }
+    }
+
+    // Template model is the fallback if no explicit model was provided
+    const model = opts.model ?? resolved?.model ?? "claude-opus-4.6";
 
     const tools = createTeamTools(this.state, opts.id, {
       eventBus: this,
@@ -288,16 +317,14 @@ export class Orchestrator extends EventEmitter {
     if (opts.systemPrompt) {
       systemPrompt = opts.systemPrompt;
     } else if (isLead) {
-      systemPrompt = buildLeadPrompt(opts.id, opts.role, this.leadPrompt);
+      const templateContent = resolved?.content ?? "";
+      systemPrompt = buildLeadPrompt(opts.id, opts.role, this.leadPrompt, templateContent, resolved?.promptMode);
+    } else if (resolved && resolved.promptMode === "replace") {
+      systemPrompt = resolved.content + `\n\n${COMMUNICATION_RULES}`;
     } else {
-      let templateContent = "";
-      if (opts.template) {
-        const resolved = resolveTemplate(opts.template, this.workingDirectory);
-        if (resolved) {
-          templateContent = `\n\n## ROLE TEMPLATE: ${resolved.name} (${resolved.source})\n${resolved.content}`;
-          console.log(`📄 [${this.teamId}] Applied template "${resolved.name}" (${resolved.source}) to ${opts.id}`);
-        }
-      }
+      const templateContent = resolved
+        ? `\n\n## ROLE TEMPLATE: ${resolved.name} (${resolved.source})\n${resolved.content}`
+        : "";
       systemPrompt = buildWorkerPrompt(opts.id, opts.role) + templateContent;
     }
 

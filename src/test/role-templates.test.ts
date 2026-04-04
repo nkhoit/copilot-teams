@@ -64,6 +64,43 @@ describe("Role Templates", () => {
       // Just verify it doesn't crash
       expect(result === null || result.source === "global").toBe(true);
     });
+
+    it("parses frontmatter model field", () => {
+      writeProjectTemplate("backend", "---\nmodel: claude-sonnet-4\n---\n# Backend Dev\nBuild APIs.");
+
+      const result = resolveTemplate("backend", projectDir);
+      expect(result).not.toBeNull();
+      expect(result!.model).toBe("claude-sonnet-4");
+      expect(result!.content).toContain("Build APIs");
+      expect(result!.content).not.toContain("---");
+    });
+
+    it("parses frontmatter prompt mode", () => {
+      writeProjectTemplate("custom-lead", "---\nprompt: replace\nmodel: gpt-5.4\n---\nYou are a custom lead.");
+
+      const result = resolveTemplate("custom-lead", projectDir);
+      expect(result!.promptMode).toBe("replace");
+      expect(result!.model).toBe("gpt-5.4");
+      expect(result!.content).toBe("You are a custom lead.");
+    });
+
+    it("handles template with no frontmatter", () => {
+      writeProjectTemplate("simple", "# Simple\nJust do the work.");
+
+      const result = resolveTemplate("simple", projectDir);
+      expect(result!.model).toBeUndefined();
+      expect(result!.promptMode).toBeUndefined();
+      expect(result!.content).toContain("Just do the work");
+    });
+
+    it("handles malformed frontmatter (no closing ---)", () => {
+      writeProjectTemplate("broken", "---\nmodel: opus\nThis has no closing delimiter.");
+
+      const result = resolveTemplate("broken", projectDir);
+      // Treated as no frontmatter — raw content preserved
+      expect(result!.model).toBeUndefined();
+      expect(result!.content).toContain("---");
+    });
   });
 
   // ── listTemplates ──────────────────────────────────────
@@ -89,6 +126,16 @@ describe("Role Templates", () => {
       const tester = templates.find((t) => t.name === "tester");
       expect(tester).toBeDefined();
       expect(tester!.description).toBe("Always run existing tests first.");
+    });
+
+    it("includes model from frontmatter in listing", () => {
+      writeProjectTemplate("fast-dev", "---\nmodel: claude-sonnet-4\n---\n# Fast Dev\nQuick and cheap.");
+
+      const templates = listTemplates(projectDir);
+      const dev = templates.find((t) => t.name === "fast-dev" && t.source === "project");
+      expect(dev).toBeDefined();
+      expect(dev!.model).toBe("claude-sonnet-4");
+      expect(dev!.description).toBe("Quick and cheap.");
     });
 
     it("handles empty directory", () => {
