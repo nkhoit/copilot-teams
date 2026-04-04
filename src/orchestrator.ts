@@ -29,8 +29,10 @@ Your responsibilities:
 - Assign tasks to workers and monitor progress
 - Declare mission completion with team_complete_mission when the objective is fulfilled
 
-You have access to team tools: team_dm, team_get_roster, team_create_task, team_get_tasks, team_claim_task, team_complete_task, team_list_templates, team_spawn_agent, team_complete_mission.
-Use these tools to coordinate. Do NOT just describe what you'd do — actually call the tools.`;
+You have access to team tools: team_dm, team_get_roster, team_create_task, team_get_tasks, team_claim_task, team_complete_task, team_list_templates, team_spawn_agent, team_complete_mission, team_reject_task, team_request_input.
+Use these tools to coordinate. Do NOT just describe what you'd do — actually call the tools.
+
+When starting a complex mission, use team_request_input to present your plan and wait for approval before spawning workers.`;
 
   const custom = customPrompt ? `\n\n## OPERATING INSTRUCTIONS\n${customPrompt}` : "";
   return `${base}${custom}\n\n${COMMUNICATION_RULES}`;
@@ -205,6 +207,7 @@ export class Orchestrator extends EventEmitter {
 
         session.on("tool.execution_start", (event) => {
           console.log(`\n🔧 [${this.teamId}/${agent.id}] tool: ${event.data.toolName}`);
+          this.state.logToolCall(agent.id, event.data.toolName);
         });
 
         restored++;
@@ -281,6 +284,7 @@ export class Orchestrator extends EventEmitter {
 
     session.on("tool.execution_start", (event) => {
       console.log(`\n🔧 [${this.teamId}/${opts.id}] tool: ${event.data.toolName}`);
+      this.state.logToolCall(opts.id, event.data.toolName);
     });
 
     const agent: Agent = {
@@ -290,6 +294,7 @@ export class Orchestrator extends EventEmitter {
       status: "idle",
       currentTask: null,
       workingDirectory: agentWorkDir,
+      waitingReason: null,
     };
 
     this.state.logActivity("agent.joined", opts.id, { role: opts.role, model, workingDirectory: agentWorkDir });
@@ -314,6 +319,13 @@ export class Orchestrator extends EventEmitter {
     const roster = this.state.getRoster();
     if (roster.length === 0) throw new Error("No agents on the team");
 
+    // Auto-reset waiting status when lead receives a message
+    const lead = roster[0];
+    if (lead.status === "waiting") {
+      this.state.setAgentStatus(lead.id, "idle", null, null);
+      this.emit("event", { type: "agent.status", agentId: lead.id, status: "idle" as const, currentTask: null });
+    }
+
     const msg = this.state.addMessage(from, content, null, roster[0].id);
     const apiMsg = toApiMessage(msg);
     this.emit("event", { type: "message.dm", message: apiMsg });
@@ -332,6 +344,13 @@ export class Orchestrator extends EventEmitter {
   async sendDM(to: string, content: string, from: string = "user"): Promise<Message> {
     const session = this.state.getSession(to);
     if (!session) throw new Error(`Agent "${to}" not found`);
+
+    // Auto-reset waiting status when agent receives a DM
+    const agent = this.state.getAgent(to);
+    if (agent?.status === "waiting") {
+      this.state.setAgentStatus(to, "idle", null, null);
+      this.emit("event", { type: "agent.status", agentId: to, status: "idle" as const, currentTask: null });
+    }
 
     const msg = this.state.addMessage(from, content, null, to);
     const apiMsg = toApiMessage(msg);
@@ -404,6 +423,7 @@ export class Orchestrator extends EventEmitter {
       status: a.status,
       currentTask: a.currentTask,
       workingDirectory: a.workingDirectory,
+      waitingReason: a.waitingReason,
     }));
   }
 
@@ -417,6 +437,7 @@ export class Orchestrator extends EventEmitter {
       status: a.status,
       currentTask: a.currentTask,
       workingDirectory: a.workingDirectory,
+      waitingReason: a.waitingReason,
     };
   }
 
@@ -445,6 +466,10 @@ export class Orchestrator extends EventEmitter {
       data: JSON.parse(a.data),
       timestamp: a.timestamp,
     }));
+  }
+
+  getToolCalls(agentId?: string, limit: number = 100) {
+    return this.state.getToolCalls(agentId, limit);
   }
 
   createTask(id: string, title: string, description: string = "", dependsOn: string[] = [], assignee?: string): Task {

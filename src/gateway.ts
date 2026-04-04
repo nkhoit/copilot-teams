@@ -275,6 +275,14 @@ export function createGateway(daemon: Daemon) {
     res.json((req as any).orchestrator.getActivity(limit));
   });
 
+  // ── REST: Per-Team Tool Calls ──────────────────────────────
+
+  app.get("/api/teams/:teamId/tool-calls", resolveTeam, (req, res) => {
+    const agentId = req.query.agent as string | undefined;
+    const limit = parseInt(req.query.limit as string) || 100;
+    res.json((req as any).orchestrator.getToolCalls(agentId, limit));
+  });
+
   return { app, server, wss };
 }
 

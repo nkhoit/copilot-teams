@@ -6,9 +6,10 @@ export interface Agent {
   id: string;
   role: string;
   model: string;
-  status: "idle" | "working";
+  status: "idle" | "working" | "waiting";
   currentTask: string | null;
   workingDirectory: string | null;
+  waitingReason: string | null;
 }
 
 export interface Message {
@@ -116,11 +117,12 @@ export interface UpdateMissionRequest {
 export type ServerEvent =
   | { type: "agent.joined"; teamId: string; agent: Agent }
   | { type: "agent.left"; teamId: string; agentId: string }
-  | { type: "agent.status"; teamId: string; agentId: string; status: Agent["status"]; currentTask: string | null }
+  | { type: "agent.status"; teamId: string; agentId: string; status: Agent["status"]; currentTask: string | null; waitingReason?: string }
   | { type: "message.dm"; teamId: string; message: Message }
   | { type: "task.created"; teamId: string; task: Task }
   | { type: "task.claimed"; teamId: string; taskId: string; agentId: string }
   | { type: "task.completed"; teamId: string; taskId: string; agentId: string; result: string }
+  | { type: "task.rejected"; teamId: string; taskId: string; agentId: string; feedback: string }
   | { type: "task.unblocked"; teamId: string; task: Task }
   | { type: "mission.updated"; teamId: string; text: string }
   | { type: "mission.completed"; teamId: string; summary: string }

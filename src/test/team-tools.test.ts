@@ -331,4 +331,102 @@ describe("Team Tools", () => {
       expect(completedSummary).toBe("All tasks done, auth module refactored");
     });
   });
+
+  // ── team_request_input ──────────────────────────────────
+
+  describe("team_request_input", () => {
+    it("sets agent status to waiting with reason", async () => {
+      const handler = getToolHandler("lead", "team_request_input");
+      const result = await handler({ reason: "Please review the task plan before I spawn workers" });
+
+      expect(result.waiting).toBe(true);
+      expect(result.reason).toContain("review the task plan");
+
+      const agent = state.getAgent("lead");
+      expect(agent!.status).toBe("waiting");
+      expect(agent!.waitingReason).toContain("review the task plan");
+    });
+
+    it("is available to all agents, not just lead", () => {
+      const workerTools = getToolNames("dev");
+      expect(workerTools).toContain("team_request_input");
+    });
+
+    it("logs activity when waiting", async () => {
+      const handler = getToolHandler("lead", "team_request_input");
+      await handler({ reason: "Need approval" });
+
+      const activity = state.getActivity(10);
+      const waitingActivity = activity.find((a) => a.type === "agent.waiting");
+      expect(waitingActivity).toBeDefined();
+    });
+  });
+
+  // ── team_reject_task (lead-only) ────────────────────────
+
+  describe("team_reject_task", () => {
+    it("rejects a completed task and moves it back to pending", async () => {
+      state.createTask("task-1", "Build API", "");
+      state.claimTask("task-1", "dev");
+      state.completeTask("task-1", "dev", "Done but buggy");
+
+      const handler = getToolHandler("lead", "team_reject_task", {
+        isLead: true,
+        spawnAgent: async () => {},
+        completeMission: () => {},
+      });
+
+      const result = await handler({ taskId: "task-1", feedback: "Tests are failing, fix the edge cases" });
+
+      expect(result.rejected).toBe(true);
+
+      const task = state.getTasks().find((t) => t.id === "task-1");
+      expect(task!.status).toBe("pending");
+      expect(task!.assignee).toBeNull();
+      expect(task!.result).toBeNull();
+    });
+
+    it("returns error for non-done tasks", async () => {
+      state.createTask("task-1", "Build API", "");
+
+      const handler = getToolHandler("lead", "team_reject_task", {
+        isLead: true,
+        spawnAgent: async () => {},
+        completeMission: () => {},
+      });
+
+      const result = await handler({ taskId: "task-1", feedback: "Bad work" });
+      expect(result.error).toBeDefined();
+    });
+
+    it("is only available to the lead", () => {
+      const workerTools = getToolNames("dev");
+      expect(workerTools).not.toContain("team_reject_task");
+
+      const leadTools = getToolNames("lead", {
+        isLead: true,
+        spawnAgent: async () => {},
+        completeMission: () => {},
+      });
+      expect(leadTools).toContain("team_reject_task");
+    });
+
+    it("logs rejection in activity feed", async () => {
+      state.createTask("task-1", "Build API", "");
+      state.claimTask("task-1", "dev");
+      state.completeTask("task-1", "dev", "Done");
+
+      const handler = getToolHandler("lead", "team_reject_task", {
+        isLead: true,
+        spawnAgent: async () => {},
+        completeMission: () => {},
+      });
+
+      await handler({ taskId: "task-1", feedback: "Needs more tests" });
+
+      const activity = state.getActivity(10);
+      const rejected = activity.find((a) => a.type === "task.rejected");
+      expect(rejected).toBeDefined();
+    });
+  });
 });

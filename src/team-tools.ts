@@ -191,6 +191,30 @@ export function createTeamTools(
         return outcome;
       },
     }),
+
+    defineTool("team_request_input", {
+      description:
+        "Signal that you need input from the user before proceeding. Sets your status to 'waiting' so the user " +
+        "or orchestrating agent knows you're blocked. Include what you need in the reason. You will be resumed " +
+        "when a message is sent to you.",
+      parameters: z.object({
+        reason: z.string().describe("What input or approval you need (e.g., 'Please review the task plan before I spawn workers')"),
+      }),
+      skipPermission: true,
+      handler: async ({ reason }) => {
+        state.setAgentStatus(agentId, "waiting", null, reason);
+        state.logActivity("agent.waiting", agentId, { reason });
+        emit({
+          type: "agent.status",
+          agentId,
+          status: "waiting" as const,
+          currentTask: null,
+          waitingReason: reason,
+        });
+        console.log(`\n⏸️  ${agentId} is waiting: ${reason}`);
+        return { waiting: true, reason };
+      },
+    }),
   ];
 
   // ── Lead-Only Tools ───────────────────────────────────────
@@ -264,6 +288,32 @@ export function createTeamTools(
           completeMission(summary);
           console.log(`\n🎯 Mission completed: ${summary}`);
           return { completed: true, summary };
+        },
+      }),
+    );
+
+    tools.push(
+      defineTool("team_reject_task", {
+        description:
+          "Reject a completed task and send it back for rework. The task moves back to 'pending' with feedback. " +
+          "Use this when a worker's result doesn't meet quality standards.",
+        parameters: z.object({
+          taskId: z.string().describe("The task ID to reject"),
+          feedback: z.string().describe("What's wrong and what needs to change"),
+        }),
+        skipPermission: true,
+        handler: async ({ taskId, feedback }) => {
+          const result = state.rejectTask(taskId, feedback);
+          if (!result.rejected) {
+            return { error: `Task "${taskId}" not found or not in 'done' status. Only completed tasks can be rejected.` };
+          }
+          console.log(`\n❌ Lead rejected task: ${taskId} — ${feedback}`);
+          emit({ type: "task.rejected", taskId, agentId, feedback });
+
+          // Notify the original assignee if they have an active session
+          const task = state.getTasks().find((t) => t.id === taskId);
+          // Task is now unassigned, but we can check activity for who completed it
+          return { rejected: true, taskId, feedback };
         },
       }),
     );

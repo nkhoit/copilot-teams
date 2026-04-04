@@ -5,10 +5,11 @@ export interface AgentInfo {
   id: string;
   role: string;
   model: string;
-  status: "idle" | "working";
+  status: "idle" | "working" | "waiting";
   currentTask: string | null;
   workingDirectory: string | null;
   sessionId: string | null;
+  waitingReason: string | null;
 }
 
 export interface TeamMessage {
@@ -66,6 +67,7 @@ export class TeamState {
         current_task TEXT,
         working_directory TEXT,
         session_id TEXT,
+        waiting_reason TEXT,
         created_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
       );
 
@@ -100,6 +102,13 @@ export class TeamState {
         type TEXT NOT NULL,
         agent_id TEXT,
         data TEXT NOT NULL DEFAULT '{}',
+        timestamp INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+      );
+
+      CREATE TABLE IF NOT EXISTS tool_calls (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
         timestamp INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
       );
     `);
@@ -137,6 +146,7 @@ export class TeamState {
       currentTask: row.current_task,
       workingDirectory: row.working_directory,
       sessionId: row.session_id,
+      waitingReason: row.waiting_reason,
     };
   }
 
@@ -150,6 +160,7 @@ export class TeamState {
       currentTask: row.current_task,
       workingDirectory: row.working_directory,
       sessionId: row.session_id,
+      waitingReason: row.waiting_reason,
     }));
   }
 
@@ -170,10 +181,10 @@ export class TeamState {
     this.sessions.clear();
   }
 
-  setAgentStatus(id: string, status: "idle" | "working", currentTask?: string | null): void {
+  setAgentStatus(id: string, status: "idle" | "working" | "waiting", currentTask?: string | null, waitingReason?: string | null): void {
     this.db.prepare(
-      "UPDATE agents SET status = ?, current_task = ? WHERE id = ?",
-    ).run(status, currentTask ?? null, id);
+      "UPDATE agents SET status = ?, current_task = ?, waiting_reason = ? WHERE id = ?",
+    ).run(status, currentTask ?? null, waitingReason ?? null, id);
   }
 
   // --- Messages ---
@@ -326,6 +337,19 @@ export class TeamState {
     return { completed: true, unblocked };
   }
 
+  rejectTask(taskId: string, feedback: string): { rejected: boolean } {
+    const task = this.db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId) as Task | undefined;
+    if (!task) return { rejected: false };
+    if (task.status !== "done") return { rejected: false };
+
+    // Move task back to pending, clear assignee and result
+    this.db.prepare(
+      "UPDATE tasks SET status = 'pending', assignee = NULL, result = NULL WHERE id = ?",
+    ).run(taskId);
+    this.logActivity("task.rejected", null, { taskId, feedback: feedback.slice(0, 500) });
+    return { rejected: true };
+  }
+
   getTasks(status?: string): Task[] {
     if (status) {
       return this.db.prepare("SELECT * FROM tasks WHERE status = ?").all(status) as Task[];
@@ -384,6 +408,27 @@ export class TeamState {
     return this.db.prepare(
       "SELECT * FROM activity ORDER BY timestamp DESC LIMIT ?",
     ).all(limit) as ActivityEntry[];
+  }
+
+  // --- Tool Call Logging ---
+
+  logToolCall(agentId: string, toolName: string): void {
+    this.db.prepare(
+      "INSERT INTO tool_calls (agent_id, tool_name) VALUES (?, ?)",
+    ).run(agentId, toolName);
+  }
+
+  getToolCalls(agentId?: string, limit: number = 100): Array<{ id: number; agentId: string; toolName: string; timestamp: number }> {
+    const query = agentId
+      ? "SELECT * FROM tool_calls WHERE agent_id = ? ORDER BY id DESC LIMIT ?"
+      : "SELECT * FROM tool_calls ORDER BY id DESC LIMIT ?";
+    const args = agentId ? [agentId, limit] : [limit];
+    return (this.db.prepare(query).all(...args) as any[]).map((row) => ({
+      id: row.id,
+      agentId: row.agent_id,
+      toolName: row.tool_name,
+      timestamp: row.timestamp,
+    }));
   }
 
   close(): void {
