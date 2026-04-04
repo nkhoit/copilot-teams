@@ -57,6 +57,12 @@ Your responsibilities:
 ### Plan review
 When starting a complex mission, use team_request_input to present your plan and wait for approval before spawning workers.
 
+### Model selection
+- Use cheaper/faster models for simple tasks (setup, scaffolding, straightforward CRUD): claude-sonnet-4, gpt-5.4-mini
+- Use mid-tier models for standard development work: claude-sonnet-4, gpt-5.4
+- Reserve expensive models (claude-opus-4.6) for complex architecture, code review, and critical decisions
+- When spawning agents, always pass the model parameter — do NOT default everything to the same model
+
 You have access to team tools: team_dm, team_get_roster, team_create_task, team_get_tasks, team_claim_task, team_complete_task, team_list_templates, team_spawn_agent, team_complete_mission, team_reject_task, team_request_input.
 Use these tools to coordinate. Do NOT just describe what you'd do — actually call the tools.`;
 
