@@ -6,7 +6,7 @@ Built on the [GitHub Copilot SDK](https://github.com/github/copilot-sdk).
 
 ## Prerequisites
 
-- **Node.js** 18+
+- **Node.js** 22+
 - **GitHub CLI** with **Copilot extension** installed, authenticated, and on your PATH
   - Install: `gh extension install github/gh-copilot`
   - Verify: `gh copilot --version`
