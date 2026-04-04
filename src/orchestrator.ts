@@ -26,13 +26,33 @@ Your responsibilities:
 - Decompose the mission into tasks using team_create_task
 - Check available role templates with team_list_templates before spawning workers
 - Spawn workers with appropriate roles and working directories using team_spawn_agent
-- Assign tasks to workers and monitor progress
+- Monitor progress via team_get_tasks — but DO NOT nag or micromanage
 - Declare mission completion with team_complete_mission when the objective is fulfilled
 
-You have access to team tools: team_dm, team_get_roster, team_create_task, team_get_tasks, team_claim_task, team_complete_task, team_list_templates, team_spawn_agent, team_complete_mission, team_reject_task, team_request_input.
-Use these tools to coordinate. Do NOT just describe what you'd do — actually call the tools.
+## CRITICAL RULES — READ CAREFULLY
 
-When starting a complex mission, use team_request_input to present your plan and wait for approval before spawning workers.`;
+### You are a COORDINATOR, not a worker
+- NEVER claim or complete tasks assigned to other agents. That is their job.
+- NEVER write code, create files, or run tests yourself. Delegate all implementation to workers.
+- The ONLY tasks you may claim are coordination-level tasks you created specifically for yourself.
+
+### Do NOT micromanage
+- After assigning tasks and giving initial instructions, TRUST your workers to execute.
+- Do NOT send "reminder" or "urgent" DMs. Workers know their tasks.
+- Do NOT check on workers or ask "are you done yet?" — you will be notified when tasks complete.
+- The autonomy engine handles nudging idle agents automatically. You do not need to do this.
+- Only DM a worker when you have NEW information they need (e.g., a dependency just unblocked, requirements changed).
+
+### Efficient communication
+- Send ONE initial instruction DM per worker when you assign their first task. Include everything they need.
+- After that, stay quiet unless a task completes and you need to provide context for the next phase.
+- When a task completes, check if downstream tasks auto-unblocked — if so, the assigned worker will pick them up.
+
+### Plan review
+When starting a complex mission, use team_request_input to present your plan and wait for approval before spawning workers.
+
+You have access to team tools: team_dm, team_get_roster, team_create_task, team_get_tasks, team_claim_task, team_complete_task, team_list_templates, team_spawn_agent, team_complete_mission, team_reject_task, team_request_input.
+Use these tools to coordinate. Do NOT just describe what you'd do — actually call the tools.`;
 
   const custom = customPrompt ? `\n\n## OPERATING INSTRUCTIONS\n${customPrompt}` : "";
   return `${base}${custom}\n\n${COMMUNICATION_RULES}`;
@@ -43,7 +63,21 @@ function buildWorkerPrompt(agentId: string, role: string): string {
 You are a team member. Follow the lead's direction, claim and complete tasks assigned to you.
 Report results via team_complete_task and DM the lead with important findings.
 
-You have access to team tools: team_dm, team_get_roster, team_get_tasks, team_claim_task, team_complete_task.
+## WORK RULES
+
+### Task discipline
+- Use team_get_tasks to check your assigned tasks. Only work on tasks with status "pending" that are assigned to you.
+- If ALL your tasks are "blocked", do NOT start working speculatively. Use team_request_input to signal you are waiting, then stop.
+- Do NOT scan for files or try to work ahead on blocked tasks. You will be notified when dependencies complete.
+- When you complete a task, immediately check team_get_tasks for your next pending task and claim it.
+- Work through your tasks sequentially without waiting for the lead between tasks.
+
+### Efficiency
+- Focus on doing the work, not discussing it. Minimize messages to the lead.
+- Only DM the lead if you are genuinely blocked on something outside your control, or if you completed all your tasks.
+- Do NOT send status updates, acknowledgments, or progress reports.
+
+You have access to team tools: team_dm, team_get_roster, team_get_tasks, team_claim_task, team_complete_task, team_request_input.
 Use these tools to coordinate. Do NOT just describe what you'd do — actually call the tools.
 
 ${COMMUNICATION_RULES}`;
@@ -407,6 +441,21 @@ export class Orchestrator extends EventEmitter {
     this.teamState = "completed";
     this.state.logActivity("mission.completed", null, { summary });
     this.emit("event", { type: "mission.completed", summary });
+
+    // Disconnect all non-lead agents to stop burning tokens
+    const roster = this.state.getRoster();
+    for (const agent of roster) {
+      const session = this.state.getSession(agent.id);
+      if (!session) continue;
+      if (agent.id === roster[0]?.id) {
+        // Send the lead a final wrap-up, then disconnect
+        session.send({
+          prompt: `[MISSION COMPLETE]: ${summary}\n\nAll work is done. Do not send any more messages or call any tools. Session ending.`,
+        }).finally(() => session.disconnect());
+      } else {
+        session.disconnect();
+      }
+    }
   }
 
   // ── Lifecycle ───────────────────────────────────────────────

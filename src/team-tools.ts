@@ -134,6 +134,14 @@ export function createTeamTools(
       }),
       skipPermission: true,
       handler: async ({ taskId }) => {
+        // Prevent lead from claiming tasks assigned to other agents
+        if (options?.isLead) {
+          const tasks = state.getTasks();
+          const task = tasks.find((t) => t.id === taskId);
+          if (task?.assignee && task.assignee !== agentId) {
+            return { success: false, reason: `Task is assigned to ${task.assignee}. As lead, you coordinate — let the assigned worker claim and complete it.` };
+          }
+        }
         const result = state.claimTask(taskId, agentId);
         if (result.success) {
           state.resetVolley(agentId);
@@ -158,6 +166,14 @@ export function createTeamTools(
       }),
       skipPermission: true,
       handler: async ({ taskId, result }) => {
+        // Prevent lead from completing tasks claimed by other agents
+        if (options?.isLead) {
+          const tasks = state.getTasks();
+          const task = tasks.find((t) => t.id === taskId);
+          if (task?.assignee && task.assignee !== agentId) {
+            return { success: false, reason: `Task is claimed by ${task.assignee}. As lead, you coordinate — let the assigned worker complete it.` };
+          }
+        }
         const outcome = state.completeTask(taskId, agentId, result);
         state.resetVolley(agentId);
         console.log(`\n✅ ${agentId} completed task: ${taskId}`);

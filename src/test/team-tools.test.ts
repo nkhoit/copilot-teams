@@ -429,4 +429,43 @@ describe("Team Tools", () => {
       expect(rejected).toBeDefined();
     });
   });
+
+  // ── Lead claim/complete guards ───────────────────────────
+
+  describe("lead task guards", () => {
+    it("lead cannot claim a task assigned to another agent", async () => {
+      state.createTask("t1", "Dev task", "work", [], "dev");
+      const handler = getToolHandler("lead", "team_claim_task", { isLead: true });
+      const result = await handler({ taskId: "t1" });
+      expect(result.success).toBe(false);
+      expect(result.reason).toContain("assigned to dev");
+    });
+
+    it("lead CAN claim an unassigned task", async () => {
+      state.createTask("t2", "Lead task", "coord work");
+      const handler = getToolHandler("lead", "team_claim_task", { isLead: true });
+      const result = await handler({ taskId: "t2" });
+      expect(result.success).toBe(true);
+    });
+
+    it("lead cannot complete a task claimed by another agent", async () => {
+      state.createTask("t3", "Dev task", "work");
+      state.claimTask("t3", "dev");
+      const handler = getToolHandler("lead", "team_complete_task", { isLead: true });
+      const result = await handler({ taskId: "t3", result: "done" });
+      expect(result.success).toBe(false);
+      expect(result.reason).toContain("claimed by dev");
+    });
+
+    it("worker can still claim/complete their own assigned tasks", async () => {
+      state.createTask("t4", "Dev task", "work", [], "dev");
+      const claimHandler = getToolHandler("dev", "team_claim_task");
+      const claimResult = await claimHandler({ taskId: "t4" });
+      expect(claimResult.success).toBe(true);
+
+      const completeHandler = getToolHandler("dev", "team_complete_task");
+      const completeResult = await completeHandler({ taskId: "t4", result: "done" });
+      expect(completeResult.unblocked).toBeDefined();
+    });
+  });
 });
