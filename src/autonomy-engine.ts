@@ -2,7 +2,7 @@ import { Orchestrator } from "./orchestrator.js";
 
 const HEARTBEAT_ACTIVE_MS = 2 * 60 * 1000; // 2 minutes when work is active
 const HEARTBEAT_IDLE_MS = 10 * 60 * 1000;  // 10 minutes when idle
-const IDLE_AGENT_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes before nudging about idle agent
+const NUDGE_COOLDOWN_MS = 10 * 1000; // 10 seconds between nudges to avoid duplicates
 
 /**
  * Autonomy Engine — drives the team forward via event-driven nudges
@@ -15,7 +15,7 @@ export class AutonomyEngine {
   private orchestrator: Orchestrator;
   private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
-  private lastActivityAt: number = Date.now();
+  private lastNudgeAt: number = 0;
 
   constructor(orchestrator: Orchestrator) {
     this.orchestrator = orchestrator;
@@ -25,7 +25,6 @@ export class AutonomyEngine {
   start(): void {
     if (this.running) return;
     this.running = true;
-    this.lastActivityAt = Date.now();
 
     this.orchestrator.on("event", this.handleEvent);
     this.scheduleHeartbeat();
@@ -45,8 +44,6 @@ export class AutonomyEngine {
     if (!this.running) return;
     const state = this.orchestrator.getTeamState();
     if (state !== "active") return;
-
-    this.lastActivityAt = Date.now();
 
     switch (event.type) {
       case "task.completed":
@@ -99,6 +96,9 @@ export class AutonomyEngine {
   }
 
   private async checkAllTasksDone(): Promise<void> {
+    // Skip if we just nudged (prevents double nudge when onTaskCompleted already handled this)
+    if (Date.now() - this.lastNudgeAt < NUDGE_COOLDOWN_MS) return;
+
     const tasks = this.orchestrator.getTasks();
     if (tasks.length > 0 && tasks.every((t) => t.status === "done")) {
       await this.nudgeLead(
@@ -108,6 +108,9 @@ export class AutonomyEngine {
   }
 
   private async checkDeadlock(): Promise<void> {
+    // Skip if we just nudged (prevents duplicate deadlock nudges from multiple agents going idle)
+    if (Date.now() - this.lastNudgeAt < NUDGE_COOLDOWN_MS) return;
+
     const agents = this.orchestrator.getAgents();
     const tasks = this.orchestrator.getTasks();
 
@@ -179,6 +182,23 @@ export class AutonomyEngine {
       `📊 Status: ${agents.length} agents (${working.length} working, ${idle.length} idle), ` +
       `${tasks.length} tasks (${pending.length} pending, ${inProgress.length} in-progress, ${blocked.length} blocked, ${done.length} done).`;
 
+    // Detect stuck tasks: agents marked "working" but with no live session
+    const stateDb = this.orchestrator.getTeamStateDb();
+    for (const agent of working) {
+      const session = stateDb.getSession(agent.id);
+      if (!session) {
+        console.warn(`⚠️ [${this.orchestrator.teamId}] Agent "${agent.id}" is working but has no session — resetting`);
+        stateDb.setAgentStatus(agent.id, "idle", null);
+        // Reset their in_progress task back to pending
+        for (const task of inProgress) {
+          if (task.assignee === agent.id) {
+            stateDb.resetStuckTask(task.id);
+            console.warn(`⚠️ [${this.orchestrator.teamId}] Reset stuck task "${task.id}" to pending`);
+          }
+        }
+      }
+    }
+
     if (idle.length > 0 && pending.length > 0) {
       await this.nudgeLead(
         `${summary} Idle agents could work on pending tasks. Assign them or take action.`,
@@ -209,6 +229,7 @@ export class AutonomyEngine {
     const leadSession = state.getSession(leadId);
     if (!leadSession) return;
 
+    this.lastNudgeAt = Date.now();
     console.log(`🧠 [${this.orchestrator.teamId}] Nudge → ${leadId}: ${message.slice(0, 100)}...`);
     await leadSession.send({
       prompt: `[AUTONOMY ENGINE]: ${message}`,

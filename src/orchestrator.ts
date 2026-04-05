@@ -227,6 +227,12 @@ export class Orchestrator extends EventEmitter {
     this.started = true;
     this.teamState = "active";
 
+    // Reset any in_progress tasks left over from pre-crash state
+    const orphaned = this.state.resetOrphanedTasks();
+    if (orphaned > 0) {
+      console.log(`♻️  [${this.teamId}] Reset ${orphaned} orphaned in_progress task(s) to pending`);
+    }
+
     const roster = this.state.getRoster();
     let restored = 0;
 

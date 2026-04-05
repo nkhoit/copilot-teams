@@ -392,6 +392,25 @@ export class TeamState {
     ).all() as Task[];
   }
 
+  /** Reset a stuck in_progress task back to pending (e.g., after session crash) */
+  resetStuckTask(taskId: string): void {
+    this.db.prepare(
+      "UPDATE tasks SET status = 'pending' WHERE id = ? AND status = 'in_progress'",
+    ).run(taskId);
+    this.logActivity("task.reset", null, { taskId, reason: "stuck_in_progress" });
+  }
+
+  /** Reset all in_progress tasks to pending (used on restore after crash) */
+  resetOrphanedTasks(): number {
+    const result = this.db.prepare(
+      "UPDATE tasks SET status = 'pending' WHERE status = 'in_progress'",
+    ).run();
+    if (result.changes > 0) {
+      this.logActivity("tasks.reset_orphaned", null, { count: result.changes });
+    }
+    return result.changes;
+  }
+
   // --- Mission ---
 
   setMission(text: string): MissionEntry {
