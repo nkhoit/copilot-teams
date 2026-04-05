@@ -303,14 +303,35 @@ describe("TeamState", () => {
       expect(state.getTasks("done")).toHaveLength(0);
     });
 
-    it("gets unblocked (pending + unassigned) tasks", () => {
+    it("resetAgentTasks resets in_progress tasks for a specific agent", () => {
       state.createTask("t1", "Task 1", "");
-      state.createTask("t2", "Task 2", "", [], "dev");
-      state.createTask("t3", "Task 3", "", ["t1"]);
+      state.createTask("t2", "Task 2", "");
+      state.claimTask("t1", "dev1");
+      state.claimTask("t2", "dev2");
 
-      const unblocked = state.getUnblockedTasks();
-      expect(unblocked).toHaveLength(1);
-      expect(unblocked[0].id).toBe("t1");
+      state.resetAgentTasks("dev1");
+
+      const tasks = state.getTasks();
+      const t1 = tasks.find((t) => t.id === "t1")!;
+      const t2 = tasks.find((t) => t.id === "t2")!;
+      expect(t1.status).toBe("pending");
+      expect(t2.status).toBe("in_progress");
+    });
+
+    it("rejectTask re-blocks dependent tasks", () => {
+      state.createTask("t1", "Task 1", "");
+      state.createTask("t2", "Task 2", "", ["t1"]);
+      state.claimTask("t1", "dev");
+      state.completeTask("t1", "dev", "done");
+
+      // t2 should now be pending (unblocked)
+      let t2 = state.getTasks().find((t) => t.id === "t2")!;
+      expect(t2.status).toBe("pending");
+
+      // Reject t1 — t2 should go back to blocked
+      state.rejectTask("t1", "needs rework");
+      t2 = state.getTasks().find((t) => t.id === "t2")!;
+      expect(t2.status).toBe("blocked");
     });
   });
 

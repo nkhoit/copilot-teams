@@ -130,8 +130,13 @@ export class TeamState {
     }
 
     const sessionId = (session as any).sessionId ?? null;
+    // Use INSERT ... ON CONFLICT to preserve created_at for existing agents
     this.db.prepare(
-      "INSERT OR REPLACE INTO agents (id, role, model, status, working_directory, session_id) VALUES (?, ?, ?, 'idle', ?, ?)",
+      `INSERT INTO agents (id, role, model, status, working_directory, session_id)
+       VALUES (?, ?, ?, 'idle', ?, ?)
+       ON CONFLICT(id) DO UPDATE SET role=excluded.role, model=excluded.model, status='idle',
+         working_directory=excluded.working_directory, session_id=excluded.session_id,
+         current_task=NULL, waiting_reason=NULL`,
     ).run(id, role, model, workingDirectory ?? null, sessionId);
     this.sessions.set(id, session);
   }
@@ -371,10 +376,26 @@ export class TeamState {
     if (!task) return { rejected: false };
     if (task.status !== "done") return { rejected: false };
 
-    // Move task back to pending, keep assignee so they can rework it
-    this.db.prepare(
-      "UPDATE tasks SET status = 'pending', result = NULL WHERE id = ?",
-    ).run(taskId);
+    this.db.transaction(() => {
+      // Move task back to pending, keep assignee so they can rework it
+      this.db.prepare(
+        "UPDATE tasks SET status = 'pending', result = NULL WHERE id = ?",
+      ).run(taskId);
+
+      // Re-block any downstream tasks that depend on this rejected task
+      const dependents = this.db.prepare(
+        "SELECT id, depends_on FROM tasks WHERE depends_on LIKE ? AND status = 'pending'",
+      ).all(`%${taskId}%`) as Task[];
+      for (const dep of dependents) {
+        try {
+          const deps = JSON.parse(dep.depends_on) as string[];
+          if (deps.includes(taskId)) {
+            this.db.prepare("UPDATE tasks SET status = 'blocked' WHERE id = ?").run(dep.id);
+          }
+        } catch { /* malformed depends_on */ }
+      }
+    })();
+
     this.logActivity("task.rejected", null, { taskId, assignee: task.assignee, feedback: feedback.slice(0, 500) });
     return { rejected: true, assignee: task.assignee ?? undefined };
   }
@@ -386,10 +407,14 @@ export class TeamState {
     return this.db.prepare("SELECT * FROM tasks ORDER BY created_at").all() as Task[];
   }
 
-  getUnblockedTasks(): Task[] {
-    return this.db.prepare(
-      "SELECT * FROM tasks WHERE status = 'pending' AND assignee IS NULL",
-    ).all() as Task[];
+  /** Reset in_progress tasks for a specific agent back to pending (e.g., on despawn) */
+  resetAgentTasks(agentId: string): void {
+    const result = this.db.prepare(
+      "UPDATE tasks SET status = 'pending' WHERE assignee = ? AND status = 'in_progress'",
+    ).run(agentId);
+    if (result.changes > 0) {
+      this.logActivity("tasks.reset_agent", null, { agentId, count: result.changes });
+    }
   }
 
   /** Reset a stuck in_progress task back to pending (e.g., after session crash) */

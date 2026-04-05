@@ -39,6 +39,10 @@ export class TeamRegistry extends EventEmitter {
 
   /** Create a new team */
   async createTeam(config: TeamConfig): Promise<Orchestrator> {
+    // Validate team ID to prevent path traversal
+    if (!/^[a-zA-Z0-9_-]+$/.test(config.id)) {
+      throw new Error(`Invalid team ID "${config.id}": only alphanumeric, hyphens, and underscores allowed`);
+    }
     if (this.teams.has(config.id)) {
       throw new Error(`Team "${config.id}" already exists`);
     }
@@ -98,7 +102,7 @@ export class TeamRegistry extends EventEmitter {
   /** List all team summaries */
   listTeams(): TeamInfo[] {
     const result: TeamInfo[] = [];
-    for (const [id, orch] of this.teams) {
+    for (const [id] of this.teams) {
       const info = this.getTeamInfo(id);
       if (info) result.push(info);
     }

@@ -113,7 +113,7 @@ Report results via team_complete_task and DM the lead with important findings.
 - If you cannot resolve it after reasonable effort, DM the lead explaining the specific problem and what you tried. Do NOT silently fail or complete the task with broken output.
 - If the task requirements seem wrong or impossible, use team_reject_task to send it back with an explanation.
 
-You have access to team tools: team_dm, team_get_roster, team_get_tasks, team_claim_task, team_complete_task, team_request_input, team_reject_task.
+You have access to team tools: team_dm, team_get_roster, team_get_tasks, team_claim_task, team_complete_task, team_request_input.
 Use these tools to coordinate. Do NOT just describe what you'd do — actually call the tools.
 
 ${COMMUNICATION_RULES}`;
@@ -416,8 +416,10 @@ export class Orchestrator extends EventEmitter {
   async despawnAgent(id: string): Promise<void> {
     const session = this.state.getSession(id);
     if (session) {
-      await session.disconnect();
+      await session.disconnect().catch(() => {});
     }
+    // Reset any in_progress tasks owned by this agent before removing them
+    this.state.resetAgentTasks(id);
     this.state.deregisterAgent(id);
     this.state.logActivity("agent.left", id, {});
     this.emit("event", { type: "agent.left", agentId: id });
@@ -521,7 +523,9 @@ export class Orchestrator extends EventEmitter {
           console.error(`⚠️ [${this.teamId}] Failed to send completion to lead:`, err);
         }).finally(() => session.disconnect());
       } else {
-        session.disconnect();
+        session.disconnect().catch((err: unknown) => {
+          console.error(`⚠️ [${this.teamId}] Failed to disconnect ${agent.id}:`, err);
+        });
       }
     }
   }
