@@ -151,6 +151,7 @@ export class Orchestrator extends EventEmitter {
   private workingDirectory: string;
   private leadPrompt?: string;
   readonly createdAt: number = Date.now();
+  private spawnQueue: Promise<void> = Promise.resolve();
 
   constructor(options: OrchestratorOptions = {}) {
     super();
@@ -306,6 +307,21 @@ export class Orchestrator extends EventEmitter {
   }
 
   async spawnAgent(opts: SpawnAgentOptions): Promise<Agent> {
+    // Serialize spawns to prevent concurrent SDK session creation from freezing the system
+    const result = new Promise<Agent>((resolve, reject) => {
+      this.spawnQueue = this.spawnQueue.then(async () => {
+        try {
+          const agent = await this._spawnAgentImpl(opts);
+          resolve(agent);
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+    return result;
+  }
+
+  private async _spawnAgentImpl(opts: SpawnAgentOptions): Promise<Agent> {
     if (!this.client) throw new Error("Orchestrator not started");
 
     const isLead = opts.isLead ?? (this.state.getRoster().length === 0);

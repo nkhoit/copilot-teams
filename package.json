@@ -4,6 +4,9 @@
   "description": "Agent teams for GitHub Copilot — coordinate multiple AI agents working together",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "cpt": "dist/cli.js"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node --enable-source-maps dist/index.js",
