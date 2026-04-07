@@ -20,8 +20,8 @@ export interface Benchmark {
 }
 
 const VITEST_PATTERN = {
-  passed: /(\d+) passed/,
-  failed: /(\d+) failed/,
+  passed: /Tests\s+(\d+) passed/,
+  failed: /Tests\s+\d+ passed\s*\|\s*(\d+) failed/,
   total: /Tests\s+(\d+)/,
 };
 
