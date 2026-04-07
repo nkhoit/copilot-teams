@@ -385,7 +385,7 @@ export class TeamState {
       // Re-block any downstream tasks that depend on this rejected task
       const dependents = this.db.prepare(
         "SELECT id, depends_on FROM tasks WHERE depends_on LIKE ? AND status = 'pending'",
-      ).all(`%${taskId}%`) as Task[];
+      ).all(`%"${taskId}"%`) as Task[];
       for (const dep of dependents) {
         try {
           const deps = JSON.parse(dep.depends_on) as string[];
