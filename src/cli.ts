@@ -7,6 +7,9 @@
  *   cpt daemon start [--port 3742]
  *   cpt daemon stop
  *   cpt daemon status
+ *   cpt daemon install
+ *   cpt daemon uninstall
+ *   cpt daemon logs [--follow]
  *
  *   cpt team create <id> [--mission "..."] [--dir /path]
  *   cpt team list
@@ -73,6 +76,9 @@ Commands:
   daemon start [--port N]              Start the daemon
   daemon stop                          Stop the daemon
   daemon status                        Daemon status
+  daemon install                       Install as auto-start service
+  daemon uninstall                     Uninstall the auto-start service
+  daemon logs [--follow]               Show daemon log files
 
   team create <id> [--mission "..."] [--dir /path]
   team list                            List all teams
@@ -142,6 +148,48 @@ async function main(): Promise<void> {
         case "status": {
           const data = await request("GET", "/api/daemon/status");
           print(data);
+          break;
+        }
+        case "install": {
+          const { install } = await import("./service.js");
+          install();
+          break;
+        }
+        case "uninstall": {
+          const { uninstall } = await import("./service.js");
+          uninstall();
+          break;
+        }
+        case "logs": {
+          const { getLogPaths } = await import("./service.js");
+          const { existsSync, readFileSync } = await import("node:fs");
+          const logs = getLogPaths();
+          const follow = args.includes("--follow") || args.includes("-f");
+
+          if (!existsSync(logs.stdout) && !existsSync(logs.stderr)) {
+            console.error("❌ No log files found. Is the daemon installed?");
+            console.error(`   Expected: ${logs.stdout}`);
+            process.exit(1);
+          }
+
+          if (follow) {
+            // tail -f both log files — replaces the process
+            const files: string[] = [];
+            if (existsSync(logs.stdout)) files.push(logs.stdout);
+            if (existsSync(logs.stderr)) files.push(logs.stderr);
+            const { spawn } = await import("node:child_process");
+            const child = spawn("tail", ["-f", ...files], { stdio: "inherit" });
+            child.on("exit", (code) => process.exit(code ?? 0));
+          } else {
+            if (existsSync(logs.stdout)) {
+              console.log("── stdout ──────────────────────────────────");
+              console.log(readFileSync(logs.stdout, "utf-8"));
+            }
+            if (existsSync(logs.stderr)) {
+              console.log("── stderr ──────────────────────────────────");
+              console.log(readFileSync(logs.stderr, "utf-8"));
+            }
+          }
           break;
         }
         default:
