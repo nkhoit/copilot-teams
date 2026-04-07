@@ -15,6 +15,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "tsx src/test-harness.ts",
+    "eval": "tsx eval/run.ts",
+    "eval:all": "tsx eval/run.ts --all",
+    "eval:history": "tsx eval/run.ts --history",
     "gateway": "tsx src/index.ts"
   },
   "keywords": [
