@@ -28,6 +28,20 @@ describe("service", () => {
         expect(err.message).toMatch(/Daemon script not found/);
       }
     });
+
+    it("throws with clear message when dist/index.js is missing", async () => {
+      vi.resetModules();
+      vi.doMock("node:fs", async () => {
+        const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+        return {
+          ...actual,
+          existsSync: (p: string) =>
+            typeof p === "string" && p.endsWith("dist/index.js") ? false : actual.existsSync(p),
+        };
+      });
+      const service = await import("../service.js");
+      expect(() => service.getDaemonScript()).toThrow(/Daemon script not found/);
+    });
   });
 
   describe("getLogPaths", () => {
@@ -67,10 +81,12 @@ describe("service", () => {
         execFileSync: vi.fn(),
         spawn: vi.fn(),
       }));
+      vi.doMock("node:fs", async () => {
+        const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+        return { ...actual, existsSync: () => true };
+      });
       const service = await import("../service.js");
       const cp = await import("node:child_process");
-
-      vi.spyOn(service, "getDaemonScript").mockReturnValue("/fake/dist/index.js");
 
       service.install({ platform: "darwin" });
 
@@ -86,10 +102,12 @@ describe("service", () => {
         execFileSync: vi.fn(),
         spawn: vi.fn(),
       }));
+      vi.doMock("node:fs", async () => {
+        const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+        return { ...actual, existsSync: () => true };
+      });
       const service = await import("../service.js");
       const cp = await import("node:child_process");
-
-      vi.spyOn(service, "getDaemonScript").mockReturnValue("/fake/dist/index.js");
 
       service.install({ platform: "linux" });
 
@@ -105,8 +123,11 @@ describe("service", () => {
         execFileSync: vi.fn(),
         spawn: vi.fn(),
       }));
+      vi.doMock("node:fs", async () => {
+        const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+        return { ...actual, existsSync: () => true };
+      });
       const service = await import("../service.js");
-      vi.spyOn(service, "getDaemonScript").mockReturnValue("/fake/dist/index.js");
 
       expect(() => service.install({ platform: "win32" })).toThrow("process.exit(1)");
       expect(exitCode).toBe(1);

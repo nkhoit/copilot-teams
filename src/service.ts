@@ -73,7 +73,10 @@ function launchdPlist(nodePath: string, daemonScript: string): string {
   <true/>
 
   <key>KeepAlive</key>
-  <false/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
 
   <key>StandardOutPath</key>
   <string>${STDOUT_LOG}</string>
