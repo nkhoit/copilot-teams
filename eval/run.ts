@@ -16,7 +16,7 @@ import { benchmarks, getBenchmark, type Benchmark } from "./benchmarks.js";
 
 const EVAL_DIR = join(homedir(), ".copilot-teams", "eval");
 const RESULTS_FILE = join(EVAL_DIR, "results.json");
-const WORK_BASE = join(homedir(), "Workspace");
+const WORK_BASE = process.env.COPILOT_TEAMS_WORK_BASE || join(homedir(), "Workspace");
 
 // eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
