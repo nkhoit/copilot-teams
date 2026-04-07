@@ -18,6 +18,12 @@ const EVAL_DIR = join(homedir(), ".copilot-teams", "eval");
 const RESULTS_FILE = join(EVAL_DIR, "results.json");
 const WORK_BASE = join(homedir(), "Workspace");
 
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_RE, "");
+}
+
 interface EvalResult {
   benchmarkId: string;
   benchmarkName: string;
@@ -152,13 +158,16 @@ async function scoreRun(
     console.log("  ⚠️  Daemon unreachable — scoring from filesystem only");
   }
 
-  // Run verification tests
+  // Run verification tests (strip ANSI codes so regex matching works)
+  const execEnv = { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" };
   try {
-    const output = execSync(benchmark.verifyCommand, {
+    const raw = execSync(benchmark.verifyCommand, {
       cwd: workDir,
       encoding: "utf-8",
       timeout: 60_000,
+      env: execEnv,
     });
+    const output = stripAnsi(raw);
     const passedMatch = output.match(benchmark.testPattern.passed);
     const failedMatch = output.match(benchmark.testPattern.failed);
     const totalMatch = output.match(benchmark.testPattern.total);
@@ -169,7 +178,8 @@ async function scoreRun(
     result.testPassRate = result.testsTotal > 0 ? result.testsPassed / result.testsTotal : 0;
   } catch (err: any) {
     // Tests failed — try to extract counts from the error output
-    const output = err.stdout ?? err.stderr ?? "";
+    const raw = (err.stdout ?? err.stderr ?? "") as string;
+    const output = stripAnsi(raw);
     const passedMatch = output.match(benchmark.testPattern.passed);
     const failedMatch = output.match(benchmark.testPattern.failed);
     const totalMatch = output.match(benchmark.testPattern.total);
