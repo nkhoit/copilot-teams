@@ -16,6 +16,8 @@ export interface TeamConfig {
   createdAt: number;
 }
 
+const MAX_TEAMS = parseInt(process.env.CPT_MAX_TEAMS ?? "10", 10);
+
 /**
  * Manages multiple teams, each backed by its own Orchestrator and SQLite DB.
  * Emits all team events with teamId for WebSocket broadcasting.
@@ -42,6 +44,9 @@ export class TeamRegistry extends EventEmitter {
     // Validate team ID to prevent path traversal
     if (!/^[a-zA-Z0-9_-]+$/.test(config.id)) {
       throw new Error(`Invalid team ID "${config.id}": only alphanumeric, hyphens, and underscores allowed`);
+    }
+    if (this.teams.size >= MAX_TEAMS) {
+      throw new Error(`Team limit reached (max ${MAX_TEAMS}). Delete a team first or set CPT_MAX_TEAMS.`);
     }
     if (this.teams.has(config.id)) {
       throw new Error(`Team "${config.id}" already exists`);
