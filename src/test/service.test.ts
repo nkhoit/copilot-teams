@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 // Mock child_process globally so install/uninstall never call real binaries
 vi.mock("node:child_process", () => ({
@@ -23,7 +24,7 @@ describe("service", () => {
       try {
         const result = getDaemonScript();
         expect(existsSync(result)).toBe(true);
-        expect(result.endsWith("dist/index.js")).toBe(true);
+        expect(result.endsWith(join("dist", "index.js"))).toBe(true);
       } catch (err: any) {
         expect(err.message).toMatch(/Daemon script not found/);
       }
@@ -31,12 +32,16 @@ describe("service", () => {
 
     it("throws with clear message when dist/index.js is missing", async () => {
       vi.resetModules();
+      vi.doMock("node:child_process", () => ({
+        execFileSync: vi.fn(),
+        spawn: vi.fn(),
+      }));
       vi.doMock("node:fs", async () => {
         const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
         return {
           ...actual,
           existsSync: (p: string) =>
-            typeof p === "string" && p.endsWith("dist/index.js") ? false : actual.existsSync(p),
+            typeof p === "string" && p.endsWith(join("dist", "index.js")) ? false : actual.existsSync(p),
         };
       });
       const service = await import("../service.js");
