@@ -7,8 +7,7 @@ You can orchestrate autonomous AI agent teams using the `copilot-teams` daemon. 
 The copilot-teams daemon must be running. Start it with:
 
 ```bash
-cd <copilot-teams-repo>
-npm run cpt -- daemon start
+cpt daemon start
 ```
 
 Default port: `3742`. Override with `--port`.
@@ -18,7 +17,7 @@ Default port: `3742`. Override with `--port`.
 ### 1. Create a team
 
 ```bash
-npm run cpt -- team create <team-id> --mission "Your mission here" --dir /path/to/project
+cpt team create <team-id> --mission "Your mission here" --dir /path/to/project
 ```
 
 Or via REST:
@@ -34,45 +33,37 @@ curl -X POST http://localhost:3742/api/teams \
 The first agent becomes the team lead. They receive the mission and coordinate everything.
 
 ```bash
-npm run cpt -- agent add <team-id> --id lead --role "senior engineer and team coordinator"
+cpt agent add <team-id> --id lead --role "senior engineer and team coordinator"
 ```
 
-Optional flags: `--model <model>` (default: claude-sonnet-4), `--dir <path>` (scope agent to a subdirectory).
+Optional flags: `--model <model>` (default: claude-opus-4.6), `--dir <path>` (scope agent to a subdirectory).
 
-### 3. Send instructions to the lead
+### 3. The lead begins automatically
 
-```bash
-npm run cpt -- send <team-id> "Get started. Spawn workers as needed."
-```
-
-The lead will autonomously:
-- Decompose the mission into tasks
-- Spawn worker agents with `team_spawn_agent`
-- Assign tasks and monitor progress
-- Declare mission complete with `team_complete_mission`
+The lead automatically receives the mission and begins working. No further prompting is needed — the lead will decompose the mission, spawn workers, and coordinate autonomously.
 
 ### 4. Monitor progress
 
 ```bash
-npm run cpt -- team status <team-id>   # State, agents, tasks
-npm run cpt -- tasks <team-id>         # Task board
-npm run cpt -- activity <team-id>      # Full event log
+cpt team status <team-id>   # State, agents, tasks
+cpt tasks <team-id>         # Task board
+cpt activity <team-id>      # Full event log
 ```
 
 ### 5. Intervene if needed
 
 ```bash
-npm run cpt -- send <team-id> "Change direction — focus on the API first"
-npm run cpt -- dm <team-id> <agent-id> "Drop what you're doing, fix the auth bug"
-npm run cpt -- team pause <team-id>    # Pause the team
-npm run cpt -- team resume <team-id>   # Resume
+cpt send <team-id> "Change direction — focus on the API first"
+cpt dm <team-id> <agent-id> "Drop what you're doing, fix the auth bug"
+cpt team pause <team-id>    # Pause the team
+cpt team resume <team-id>   # Resume
 ```
 
 ### 6. Cleanup
 
 ```bash
-npm run cpt -- team delete <team-id>
-npm run cpt -- daemon stop
+cpt team delete <team-id>
+cpt daemon stop
 ```
 
 ## REST API Reference
@@ -130,6 +121,7 @@ Base URL: `http://localhost:3742/api`
 | Method | Endpoint | Body | Description |
 |--------|----------|------|-------------|
 | GET | `/teams/:id/activity` | — | Activity feed (`?limit=50`) |
+| GET | `/teams/:id/tool-calls` | — | Tool call log (`?agent=<agentId>&limit=100`) |
 
 ### WebSocket
 
@@ -162,11 +154,11 @@ await fetch(`${BASE}/teams/my-team/agents`, {
   body: JSON.stringify({ id: "lead", role: "senior engineer" }),
 });
 
-// Send instructions
+// (Optional) Send additional instructions to the lead
 await fetch(`${BASE}/teams/my-team/messages`, {
   method: "POST",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ content: "Get started on the mission." }),
+  body: JSON.stringify({ content: "Focus on the login flow first." }),
 });
 
 // Poll status
