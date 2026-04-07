@@ -51,7 +51,7 @@ export class AutonomyEngine {
           .catch((err) => console.error(`⚠️ [${this.orchestrator.teamId}] Autonomy nudge failed:`, err));
         break;
       case "task.unblocked":
-        this.checkAllTasksDone()
+        this.onTaskUnblocked(event.task)
           .catch((err) => console.error(`⚠️ [${this.orchestrator.teamId}] Autonomy nudge failed:`, err));
         break;
       case "agent.status":
@@ -107,6 +107,33 @@ export class AutonomyEngine {
     }
   }
 
+  private async onTaskUnblocked(task: { id: string; title: string; assignee?: string }): Promise<void> {
+    // First check if all tasks are done (edge case: task unblocked AND immediately done)
+    await this.checkAllTasksDone();
+
+    // Nudge idle/waiting workers to claim the newly available task
+    const agents = this.orchestrator.getAgents();
+    const state = this.orchestrator.getTeamStateDb();
+    const leadId = agents.length > 0 ? agents[0].id : null;
+
+    for (const agent of agents) {
+      if (agent.id === leadId) continue; // don't nudge lead — they don't do work
+      if (agent.status !== "idle" && agent.status !== "waiting") continue;
+
+      const session = state.getSession(agent.id);
+      if (!session) continue;
+
+      console.log(`🔔 [${this.orchestrator.teamId}] Nudge ${agent.id}: task "${task.id}" unblocked`);
+      await session.send({
+        prompt: `[TASK AVAILABLE] Task "${task.title}" (${task.id}) is now unblocked and ready to work on. ` +
+          `Call team_get_tasks to see your assignments, then claim and start working.`,
+      }).catch((err: unknown) => {
+        console.error(`⚠️ [${this.orchestrator.teamId}] Failed to nudge ${agent.id}:`, err);
+      });
+      break; // only nudge one agent per unblocked task
+    }
+  }
+
   private async checkDeadlock(): Promise<void> {
     // Skip if we just nudged (prevents duplicate deadlock nudges from multiple agents going idle)
     if (Date.now() - this.lastNudgeAt < NUDGE_COOLDOWN_MS) return;
@@ -114,10 +141,10 @@ export class AutonomyEngine {
     const agents = this.orchestrator.getAgents();
     const tasks = this.orchestrator.getTasks();
 
-    const allIdle = agents.every((a) => a.status === "idle");
+    const allIdleOrWaiting = agents.every((a) => a.status === "idle" || a.status === "waiting");
     const hasPendingWork = tasks.some((t) => t.status === "pending" || t.status === "blocked");
 
-    if (allIdle && hasPendingWork && tasks.length > 0) {
+    if (allIdleOrWaiting && hasPendingWork && tasks.length > 0) {
       const pending = tasks.filter((t) => t.status === "pending");
       const blocked = tasks.filter((t) => t.status === "blocked");
       await this.nudgeLead(
