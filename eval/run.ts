@@ -70,8 +70,21 @@ async function waitForTeamState(
   pollMs = 10_000,
 ): Promise<any> {
   const deadline = Date.now() + timeoutMs;
+  let consecutiveErrors = 0;
   while (Date.now() < deadline) {
-    const status = await api("GET", `/api/teams/${teamId}`);
+    let status: any;
+    try {
+      status = await api("GET", `/api/teams/${teamId}`);
+      consecutiveErrors = 0;
+    } catch {
+      consecutiveErrors++;
+      if (consecutiveErrors >= 3) {
+        throw new Error(`Daemon unreachable after ${consecutiveErrors} attempts — it may have crashed`);
+      }
+      console.log(`  ⚠️  Daemon unreachable (attempt ${consecutiveErrors}/3), retrying...`);
+      await new Promise((r) => setTimeout(r, pollMs));
+      continue;
+    }
 
     // Check for waiting lead (needs plan approval)
     const lead = status.agents?.find((a: any) => a.id === "lead" || a.role === "lead");
@@ -115,25 +128,29 @@ async function scoreRun(
     stuckResets: 0,
   };
 
-  // Get team status
-  const status = await api("GET", `/api/teams/${teamId}`);
-  result.agentCount = status.agents?.length ?? 0;
-  result.taskCount = status.tasks?.length ?? 0;
-  result.success = status.state === "completed";
+  // Get team status (may fail if daemon crashed)
+  try {
+    const status = await api("GET", `/api/teams/${teamId}`);
+    result.agentCount = status.agents?.length ?? 0;
+    result.taskCount = status.tasks?.length ?? 0;
+    result.success = status.state === "completed";
 
-  // Get activity for scoring
-  const activity = await api("GET", `/api/teams/${teamId}/activity?limit=500`);
-  result.rejections = activity.filter((a: any) => a.type === "task.rejected").length;
-  result.stuckResets = activity.filter((a: any) =>
-    a.type === "task.reset" || a.type === "tasks.reset_agent" || a.type === "tasks.reset_orphaned",
-  ).length;
+    // Get activity for scoring
+    const activity = await api("GET", `/api/teams/${teamId}/activity?limit=500`);
+    result.rejections = activity.filter((a: any) => a.type === "task.rejected").length;
+    result.stuckResets = activity.filter((a: any) =>
+      a.type === "task.reset" || a.type === "tasks.reset_agent" || a.type === "tasks.reset_orphaned",
+    ).length;
 
-  // Get messages
-  const messages = await api("GET", `/api/teams/${teamId}/messages?limit=500`);
-  result.totalMessages = messages.length;
-  // User nudges = messages from "user" after the initial approval
-  const userMessages = messages.filter((m: any) => m.from === "user");
-  result.userNudges = Math.max(0, userMessages.length - 1); // subtract the approval
+    // Get messages
+    const messages = await api("GET", `/api/teams/${teamId}/messages?limit=500`);
+    result.totalMessages = messages.length;
+    // User nudges = messages from "user" after the initial approval
+    const userMessages = messages.filter((m: any) => m.from === "user");
+    result.userNudges = Math.max(0, userMessages.length - 1); // subtract the approval
+  } catch {
+    console.log("  ⚠️  Daemon unreachable — scoring from filesystem only");
+  }
 
   // Run verification tests
   try {
@@ -270,6 +287,7 @@ async function runBenchmark(benchmark: Benchmark): Promise<EvalResult> {
 
   // Prepare workspace
   mkdirSync(workDir, { recursive: true });
+  const startTime = Date.now();
 
   try {
     // Create team
@@ -285,7 +303,6 @@ async function runBenchmark(benchmark: Benchmark): Promise<EvalResult> {
     await api("POST", `/api/teams/${teamId}/agents`, { id: "lead", role: "lead" });
 
     // Wait for completion
-    const startTime = Date.now();
     console.log("  ⏳ Waiting for completion...");
     await waitForTeamState(teamId, "completed", benchmark.timeoutSeconds * 1000);
     const wallTimeSeconds = (Date.now() - startTime) / 1000;
@@ -298,26 +315,12 @@ async function runBenchmark(benchmark: Benchmark): Promise<EvalResult> {
 
     return result;
   } catch (err: any) {
-    const wallTimeSeconds = 0;
-    const result: EvalResult = {
-      benchmarkId: benchmark.id,
-      benchmarkName: benchmark.name,
-      promptVersion: getPromptVersion(),
-      timestamp: new Date().toISOString(),
-      success: false,
-      wallTimeSeconds,
-      testsPassed: 0,
-      testsFailed: 0,
-      testsTotal: 0,
-      testPassRate: 0,
-      rejections: 0,
-      userNudges: 0,
-      totalMessages: 0,
-      agentCount: 0,
-      taskCount: 0,
-      stuckResets: 0,
-      error: err.message,
-    };
+    console.log(`  ⚠️  Error: ${err.message}`);
+    console.log("  📊 Attempting to score from filesystem...");
+    // Even if daemon crashed, the work may be done — try scoring from tests
+    const wallTimeSeconds = (Date.now() - startTime) / 1000;
+    const result = await scoreRun(teamId, benchmark, workDir, wallTimeSeconds);
+    result.error = err.message;
     printScorecard(result);
     saveResult(result);
     return result;
