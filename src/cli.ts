@@ -173,13 +173,55 @@ async function main(): Promise<void> {
           }
 
           if (follow) {
-            // tail -f both log files — replaces the process
             const files: string[] = [];
             if (existsSync(logs.stdout)) files.push(logs.stdout);
             if (existsSync(logs.stderr)) files.push(logs.stderr);
-            const { spawn } = await import("node:child_process");
-            const child = spawn("tail", ["-f", ...files], { stdio: "inherit" });
-            child.on("exit", (code) => process.exit(code ?? 0));
+
+            if (process.platform === "win32") {
+              // On Windows, use fs.watch + incremental read instead of tail -f
+              const fs = await import("node:fs");
+              const offsets = new Map<string, number>();
+              for (const file of files) {
+                try {
+                  offsets.set(file, fs.statSync(file).size);
+                } catch {
+                  offsets.set(file, 0);
+                }
+              }
+
+              const pending = new Set<string>();
+              const drain = (file: string): void => {
+                if (pending.has(file)) return;
+                pending.add(file);
+                setTimeout(() => {
+                  pending.delete(file);
+                  try {
+                    const prev = offsets.get(file) ?? 0;
+                    const stat = fs.statSync(file);
+                    if (stat.size > prev) {
+                      const stream = fs.createReadStream(file, { start: prev, encoding: "utf-8" });
+                      stream.on("data", (chunk: string) => process.stdout.write(chunk));
+                      stream.on("end", () => offsets.set(file, stat.size));
+                      stream.on("error", () => {});
+                    }
+                  } catch {
+                    // file may have been deleted or rotated — ignore
+                  }
+                }, 50);
+              };
+
+              for (const file of files) {
+                const watcher = fs.watch(file, () => drain(file));
+                watcher.on("error", () => {});
+              }
+              // Keep the process alive
+              process.stdin.resume();
+            } else {
+              // Unix: use tail -f which handles log rotation, etc.
+              const { spawn } = await import("node:child_process");
+              const child = spawn("tail", ["-f", ...files], { stdio: "inherit" });
+              child.on("exit", (code) => process.exit(code ?? 0));
+            }
           } else {
             if (existsSync(logs.stdout)) {
               console.log("── stdout ──────────────────────────────────");

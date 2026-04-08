@@ -122,6 +122,36 @@ describe("service", () => {
       );
     });
 
+    it("writes a .vbs file to the Startup folder on win32", async () => {
+      vi.resetModules();
+      const written = new Map<string, string>();
+      vi.doMock("node:child_process", () => ({
+        execFileSync: vi.fn(),
+        spawn: vi.fn(),
+      }));
+      vi.doMock("node:fs", async () => {
+        const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+        return {
+          ...actual,
+          existsSync: () => true,
+          mkdirSync: vi.fn(),
+          writeFileSync: vi.fn((path: string, content: string) => {
+            written.set(path, content);
+          }),
+        };
+      });
+      const service = await import("../service.js");
+
+      service.install({ platform: "win32" });
+
+      const vbsEntries = [...written.entries()].filter(([p]) => p.endsWith(".vbs"));
+      expect(vbsEntries.length).toBe(1);
+      const [vbsPath, vbsContent] = vbsEntries[0];
+      expect(vbsPath).toContain("Startup");
+      expect(vbsPath).toContain("CopilotTeamsDaemon.vbs");
+      expect(vbsContent).toContain("WScript.Shell");
+    });
+
     it("exits with error on unsupported platform", async () => {
       vi.resetModules();
       vi.doMock("node:child_process", () => ({
@@ -155,6 +185,38 @@ describe("service", () => {
 
     afterEach(() => {
       process.exit = origExit;
+    });
+
+    it("removes the .vbs file on win32", async () => {
+      vi.resetModules();
+      const removed: string[] = [];
+      vi.doMock("node:child_process", () => ({
+        execFileSync: vi.fn(),
+        spawn: vi.fn(),
+      }));
+      vi.doMock("node:fs", async () => {
+        const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+        return {
+          ...actual,
+          existsSync: (p: string) =>
+            p.endsWith(".vbs") ? true : actual.existsSync(p),
+          readFileSync: (p: string, enc?: string) => {
+            if (typeof p === "string" && p.endsWith("daemon.json"))
+              return JSON.stringify({ pid: 99999 });
+            return actual.readFileSync(p, enc as any);
+          },
+          rmSync: vi.fn((p: string) => {
+            removed.push(p);
+          }),
+        };
+      });
+      const service = await import("../service.js");
+
+      service.uninstall({ platform: "win32" });
+
+      const vbsRemoved = removed.filter((p) => p.endsWith(".vbs"));
+      expect(vbsRemoved.length).toBe(1);
+      expect(vbsRemoved[0]).toContain("CopilotTeamsDaemon.vbs");
     });
 
     it("exits with error on unsupported platform", async () => {
