@@ -312,41 +312,42 @@ export function createTeamTools(
         },
       }),
     );
-
-    tools.push(
-      defineTool("team_reject_task", {
-        description:
-          "Reject a completed task and send it back for rework. The task moves back to 'pending' with feedback. " +
-          "Use this when a worker's result doesn't meet quality standards.",
-        parameters: z.object({
-          taskId: z.string().describe("The task ID to reject"),
-          feedback: z.string().describe("What's wrong and what needs to change"),
-        }),
-        skipPermission: true,
-        handler: async ({ taskId, feedback }) => {
-          const result = state.rejectTask(taskId, feedback);
-          if (!result.rejected) {
-            return { error: `Task "${taskId}" not found or not in 'done' status. Only completed tasks can be rejected.` };
-          }
-          console.log(`\n❌ Lead rejected task: ${taskId} — ${feedback}`);
-          emit({ type: "task.rejected", taskId, agentId, feedback });
-
-          // Notify the assignee that their task was rejected
-          if (result.assignee) {
-            const msg = `TASK REJECTED: Your task "${taskId}" was reviewed and sent back for rework.\n\nFeedback: ${feedback}\n\nPlease claim the task again, address the feedback, and resubmit.`;
-            state.addMessage(agentId, msg, null, result.assignee);
-            const session = state.getSession(result.assignee);
-            if (session) {
-              await session.send({ prompt: msg }).catch((err: unknown) => {
-                console.error(`⚠️ Failed to notify ${result.assignee} of rejection:`, err);
-              });
-            }
-          }
-          return { rejected: true, taskId, assignee: result.assignee ?? null, feedback };
-        },
-      }),
-    );
   }
+
+  // Available to all agents (lead and workers) — reviewers can reject dev work
+  tools.push(
+    defineTool("team_reject_task", {
+      description:
+        "Reject a completed task and send it back for rework. The task moves back to 'pending' and downstream dependent tasks are re-blocked. " +
+        "Use this when reviewing another agent's work and finding issues that need fixing.",
+      parameters: z.object({
+        taskId: z.string().describe("The task ID to reject"),
+        feedback: z.string().describe("What's wrong and what needs to change"),
+      }),
+      skipPermission: true,
+      handler: async ({ taskId, feedback }) => {
+        const result = state.rejectTask(taskId, feedback);
+        if (!result.rejected) {
+          return { error: `Task "${taskId}" not found or not in 'done' status. Only completed tasks can be rejected.` };
+        }
+        console.log(`\n❌ ${agentId} rejected task: ${taskId} — ${feedback}`);
+        emit({ type: "task.rejected", taskId, agentId, feedback });
+
+        // Notify the assignee that their task was rejected
+        if (result.assignee) {
+          const msg = `TASK REJECTED: Your task "${taskId}" was reviewed and sent back for rework.\n\nFeedback: ${feedback}\n\nPlease claim the task again, address the feedback, and resubmit.`;
+          state.addMessage(agentId, msg, null, result.assignee);
+          const session = state.getSession(result.assignee);
+          if (session) {
+            await session.send({ prompt: msg }).catch((err: unknown) => {
+              console.error(`⚠️ Failed to notify ${result.assignee} of rejection:`, err);
+            });
+          }
+        }
+        return { rejected: true, taskId, assignee: result.assignee ?? null, feedback };
+      },
+    }),
+  );
 
   return tools;
 }

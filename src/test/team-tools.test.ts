@@ -399,9 +399,9 @@ describe("Team Tools", () => {
       expect(result.error).toBeDefined();
     });
 
-    it("is only available to the lead", () => {
+    it("is available to all agents including workers", () => {
       const workerTools = getToolNames("dev");
-      expect(workerTools).not.toContain("team_reject_task");
+      expect(workerTools).toContain("team_reject_task");
 
       const leadTools = getToolNames("lead", {
         isLead: true,

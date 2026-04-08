@@ -383,8 +383,9 @@ export class TeamState {
       ).run(taskId);
 
       // Re-block any downstream tasks that depend on this rejected task
+      // Include both pending AND in_progress dependents (e.g., reviewer is mid-review when rejecting)
       const dependents = this.db.prepare(
-        "SELECT id, depends_on FROM tasks WHERE depends_on LIKE ? AND status = 'pending'",
+        "SELECT id, depends_on FROM tasks WHERE depends_on LIKE ? AND status IN ('pending', 'in_progress')",
       ).all(`%"${taskId}"%`) as Task[];
       for (const dep of dependents) {
         try {
