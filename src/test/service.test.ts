@@ -199,7 +199,7 @@ describe("service", () => {
         return {
           ...actual,
           existsSync: (p: string) =>
-            typeof p === "string" && p.endsWith(".vbs") ? true : actual.existsSync(p),
+            p.endsWith(".vbs") ? true : actual.existsSync(p),
           readFileSync: (p: string, enc?: string) => {
             if (typeof p === "string" && p.endsWith("daemon.json"))
               return JSON.stringify({ pid: 99999 });

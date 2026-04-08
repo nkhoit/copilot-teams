@@ -182,22 +182,37 @@ async function main(): Promise<void> {
               const fs = await import("node:fs");
               const offsets = new Map<string, number>();
               for (const file of files) {
-                const stat = fs.statSync(file);
-                offsets.set(file, stat.size);
+                try {
+                  offsets.set(file, fs.statSync(file).size);
+                } catch {
+                  offsets.set(file, 0);
+                }
               }
 
+              const pending = new Set<string>();
               const drain = (file: string): void => {
-                const prev = offsets.get(file) ?? 0;
-                const stat = fs.statSync(file);
-                if (stat.size > prev) {
-                  const stream = fs.createReadStream(file, { start: prev, encoding: "utf-8" });
-                  stream.on("data", (chunk: string) => process.stdout.write(chunk));
-                  stream.on("end", () => offsets.set(file, stat.size));
-                }
+                if (pending.has(file)) return;
+                pending.add(file);
+                setTimeout(() => {
+                  pending.delete(file);
+                  try {
+                    const prev = offsets.get(file) ?? 0;
+                    const stat = fs.statSync(file);
+                    if (stat.size > prev) {
+                      const stream = fs.createReadStream(file, { start: prev, encoding: "utf-8" });
+                      stream.on("data", (chunk: string) => process.stdout.write(chunk));
+                      stream.on("end", () => offsets.set(file, stat.size));
+                      stream.on("error", () => {});
+                    }
+                  } catch {
+                    // file may have been deleted or rotated — ignore
+                  }
+                }, 50);
               };
 
               for (const file of files) {
-                fs.watch(file, () => drain(file));
+                const watcher = fs.watch(file, () => drain(file));
+                watcher.on("error", () => {});
               }
               // Keep the process alive
               process.stdin.resume();
