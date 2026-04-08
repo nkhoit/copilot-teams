@@ -6,7 +6,7 @@
  * `uninstall()` — stops the daemon and removes the auto-start registration.
  */
 
-import { existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir, platform } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -158,69 +158,56 @@ function uninstallLinux(): void {
   console.log("✅ Uninstalled systemd user service.");
 }
 
-// ── Windows (Task Scheduler) ────────────────────────────────────
+// ── Windows (Startup folder + VBS wrapper) ──────────────────────
 
 const TASK_NAME = "CopilotTeamsDaemon";
 
-function taskSchedulerXml(nodePath: string, daemonScript: string): string {
-  // Use cmd wrapper to redirect stdout/stderr to log files
-  const command = `"${nodePath}" "${daemonScript}"`;
-  return `<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <Triggers>
-    <LogonTrigger>
-      <Enabled>true</Enabled>
-    </LogonTrigger>
-  </Triggers>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <RestartOnFailure>
-      <Interval>PT1M</Interval>
-      <Count>3</Count>
-    </RestartOnFailure>
-  </Settings>
-  <Actions>
-    <Exec>
-      <Command>cmd.exe</Command>
-      <Arguments>/c ${command} &gt;&gt; "${STDOUT_LOG}" 2&gt;&gt; "${STDERR_LOG}"</Arguments>
-    </Exec>
-  </Actions>
-</Task>
-`;
-}
-
 function installWindows(nodePath: string, daemonScript: string): void {
-  const xmlPath = join(CONFIG_DIR, "scheduled-task.xml");
-  writeFileSync(xmlPath, taskSchedulerXml(nodePath, daemonScript), "utf-16le");
-  execFileSync("schtasks", ["/create", "/tn", TASK_NAME, "/xml", xmlPath, "/f"]);
-  // Start it immediately
+  const startupDir = join(process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"),
+    "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
+  mkdirSync(startupDir, { recursive: true });
+
+  // VBS wrapper runs the daemon hidden (no console window flash)
+  const vbsPath = join(startupDir, `${TASK_NAME}.vbs`);
+  const vbs = `Set shell = CreateObject("WScript.Shell")
+shell.Run """${nodePath}"" ""${daemonScript}""", 0, False
+`;
+  writeFileSync(vbsPath, vbs);
+
+  // Also start it now
   try {
-    execFileSync("schtasks", ["/run", "/tn", TASK_NAME]);
+    execFileSync("wscript.exe", [vbsPath]);
   } catch {
     // may fail if already running
   }
-  console.log(`✅ Installed Windows scheduled task: ${TASK_NAME}`);
+  console.log(`✅ Installed startup script: ${vbsPath}`);
 }
 
 function uninstallWindows(): void {
-  try {
-    execFileSync("schtasks", ["/end", "/tn", TASK_NAME]);
-  } catch {
-    // task may not be running
-  }
-  try {
-    execFileSync("schtasks", ["/delete", "/tn", TASK_NAME, "/f"]);
-  } catch {
+  const startupDir = join(process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"),
+    "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
+  const vbsPath = join(startupDir, `${TASK_NAME}.vbs`);
+
+  if (!existsSync(vbsPath)) {
     console.log("Service is not installed.");
     return;
   }
-  // Clean up XML file
-  const xmlPath = join(CONFIG_DIR, "scheduled-task.xml");
-  rmSync(xmlPath, { force: true });
-  console.log("✅ Uninstalled Windows scheduled task.");
+
+  // Kill the running daemon process
+  try {
+    const pidFile = join(CONFIG_DIR, "daemon.json");
+    if (existsSync(pidFile)) {
+      const { pid } = JSON.parse(readFileSync(pidFile, "utf-8"));
+      process.kill(pid);
+    }
+  } catch {
+    // daemon may not be running
+  }
+
+  rmSync(vbsPath, { force: true });
+  // Clean up XML file from previous installs if present
+  rmSync(join(CONFIG_DIR, "scheduled-task.xml"), { force: true });
+  console.log("✅ Uninstalled startup script.");
 }
 
 // ── Public API ──────────────────────────────────────────────────
