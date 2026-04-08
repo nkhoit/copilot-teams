@@ -134,7 +134,7 @@ describe("service", () => {
       });
       const service = await import("../service.js");
 
-      expect(() => service.install({ platform: "win32" })).toThrow("process.exit(1)");
+      expect(() => service.install({ platform: "freebsd" })).toThrow("process.exit(1)");
       expect(exitCode).toBe(1);
     });
   });
@@ -165,7 +165,7 @@ describe("service", () => {
       }));
       const service = await import("../service.js");
 
-      expect(() => service.uninstall({ platform: "win32" })).toThrow("process.exit(1)");
+      expect(() => service.uninstall({ platform: "freebsd" })).toThrow("process.exit(1)");
       expect(exitCode).toBe(1);
     });
   });

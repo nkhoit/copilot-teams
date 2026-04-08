@@ -158,6 +158,71 @@ function uninstallLinux(): void {
   console.log("✅ Uninstalled systemd user service.");
 }
 
+// ── Windows (Task Scheduler) ────────────────────────────────────
+
+const TASK_NAME = "CopilotTeamsDaemon";
+
+function taskSchedulerXml(nodePath: string, daemonScript: string): string {
+  // Use cmd wrapper to redirect stdout/stderr to log files
+  const command = `"${nodePath}" "${daemonScript}"`;
+  return `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions>
+    <Exec>
+      <Command>cmd.exe</Command>
+      <Arguments>/c ${command} &gt;&gt; "${STDOUT_LOG}" 2&gt;&gt; "${STDERR_LOG}"</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+`;
+}
+
+function installWindows(nodePath: string, daemonScript: string): void {
+  const xmlPath = join(CONFIG_DIR, "scheduled-task.xml");
+  writeFileSync(xmlPath, taskSchedulerXml(nodePath, daemonScript), "utf-16le");
+  execFileSync("schtasks", ["/create", "/tn", TASK_NAME, "/xml", xmlPath, "/f"]);
+  // Start it immediately
+  try {
+    execFileSync("schtasks", ["/run", "/tn", TASK_NAME]);
+  } catch {
+    // may fail if already running
+  }
+  console.log(`✅ Installed Windows scheduled task: ${TASK_NAME}`);
+}
+
+function uninstallWindows(): void {
+  try {
+    execFileSync("schtasks", ["/end", "/tn", TASK_NAME]);
+  } catch {
+    // task may not be running
+  }
+  try {
+    execFileSync("schtasks", ["/delete", "/tn", TASK_NAME, "/f"]);
+  } catch {
+    console.log("Service is not installed.");
+    return;
+  }
+  // Clean up XML file
+  const xmlPath = join(CONFIG_DIR, "scheduled-task.xml");
+  rmSync(xmlPath, { force: true });
+  console.log("✅ Uninstalled Windows scheduled task.");
+}
+
 // ── Public API ──────────────────────────────────────────────────
 
 export function install(overrides?: { platform?: string }): void {
@@ -173,6 +238,9 @@ export function install(overrides?: { platform?: string }): void {
       break;
     case "linux":
       installLinux(nodePath, daemonScript);
+      break;
+    case "win32":
+      installWindows(nodePath, daemonScript);
       break;
     default:
       console.error(`❌ Unsupported platform: ${os}`);
@@ -192,6 +260,9 @@ export function uninstall(overrides?: { platform?: string }): void {
       break;
     case "linux":
       uninstallLinux();
+      break;
+    case "win32":
+      uninstallWindows();
       break;
     default:
       console.error(`❌ Unsupported platform: ${os}`);
