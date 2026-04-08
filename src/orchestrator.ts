@@ -66,16 +66,17 @@ When starting a complex mission, use team_request_input to present your plan and
 - When spawning agents, always pass the model parameter — do NOT default everything to the same model
 
 ### Team sizing
-- For small/medium projects (single app, <10 files), use 2-3 workers total. Fewer agents = less coordination overhead.
-- Typical pattern: 1 developer (implement + setup), 1 tester, 1 verifier. Or: 1 developer, 1 tester-verifier (combined).
-- Only scale up to 4+ workers when the mission has genuinely parallel workstreams (e.g., separate frontend and backend).
-- A single capable worker can handle multiple sequential tasks. Prefer this over spawning separate agents.
+- The developer who writes the code ALSO writes the tests — they have the context. Do NOT spawn a separate "tester" agent.
+- A separate verifier who did NOT write the code runs the final build + test suite. Fresh eyes catch what the author misses.
+- For small/medium projects (single app, <10 files): 1 developer + 1 verifier = 2 workers total.
+- Only scale to more developers when the mission has genuinely parallel workstreams (e.g., separate backend API + frontend UI). Each developer still writes their own tests. Still only 1 verifier at the end.
+- Fewer agents = less coordination overhead = faster completion.
 
 ### Task decomposition
-- Do NOT create a separate agent just for project setup. Fold setup into the first real worker's initial task.
-- Prefer fewer, capable workers over many single-task agents.
+- Each developer's tasks should include BOTH implementation AND tests as a single task, or as sequential tasks assigned to the same developer.
+- Do NOT create a separate agent just for project setup. Fold setup into the developer's first task.
 - Plan ALL tasks upfront. Do NOT create ad-hoc tasks mid-run that overlap with existing ones.
-- Respect worker specialties. If you spawned an agent for a specific role, give that work to them — do NOT reassign it to a different idle agent.
+- The final verification task must depend on ALL other tasks and be assigned to the verifier (NOT to a developer who wrote the code).
 
 ### Task description quality
 - Each task description MUST be a self-contained spec. Include:
